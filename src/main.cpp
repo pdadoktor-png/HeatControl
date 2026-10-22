@@ -506,17 +506,10 @@ r.valid=isfinite(r.temp)&&r.ohms>=100.0f&&r.ohms<=POT_MAX_R*1.05f;
 adsGoodPolls++;
 }
 bool applyPotiTemperatures(){
-float values[3];
-  for (int i = 0; i < 3; i += 2) {
-    if (!sensor[i].valid || !isfinite(sensor[i].ohms) || sensor[i].ohms < 0 || sensor[i].ohms > POT_MAX_R * 1.05f) {
-      return false;
-    }
-    values[i] = sensor[i].temp;
-  }
-  outsideTemp = values[0];
+  outsideTemp = sensor[0].valid ? sensor[0].temp : NAN;
   roomTemp = sensor[1].valid ? sensor[1].temp : NAN;
-  boilerTemp = values[2];
-return true;
+  boilerTemp = sensor[2].valid ? sensor[2].temp : NAN;
+  return sensor[0].valid && sensor[2].valid;
 }
 String sensorJson(){
 String out="{\"connected\":"+String(adsReady?"true":"false")+",\"calibrated\":false,\"i2cErrors\":"+String(adsErrorCount)+",\"recoveries\":"+String(adsRecoveryCount)+",\"goodPolls\":"+String(adsGoodPolls)+",\"channels\":[";
@@ -633,6 +626,7 @@ out+="]}";
 }
 float desiredBoiler() {
   // Vorlaeufige, begrenzte Test-Heizkurve; spaeter kalibrieren.
+if (!isfinite(outsideTemp)) return NAN;
 float setpoint = targetRoom + slope * (targetRoom-outsideTemp);
 return constrain(setpoint, 25.0f, 75.0f);
 }
@@ -1074,46 +1068,64 @@ Serial.println("DISPLAY: LVGL objects created");
 static void refreshDisplay(){
 if(!tempLabel)return;
 char buffer[256];
-  for(int i=0;i<16;i++){
-float a=-20.0f+i*3.0f;
-curvePoints[i].x=(int)((a+20.0f)/45.0f*GW);
-curvePoints[i].y=graphY(graphSetpoint(a))-GY;
-  }
+for(int i=0;i<16;i++){
+  float a=-20.0f+i*3.0f;
+  curvePoints[i].x=(int)((a+20.0f)/45.0f*GW);
+  curvePoints[i].y=graphY(graphSetpoint(a))-GY;
+}
 lv_line_set_points(curveLine,curvePoints,16);
-int by=constrain(graphY(boilerTemp)-GY,0,GH);
-int ty=constrain(graphY(desiredBoiler())-GY,0,GH);
-boilerPoints[0]={0,(decltype(boilerPoints[0].y))by};
+const bool outsideValid=isfinite(outsideTemp);
+const bool boilerValid=isfinite(boilerTemp);
+const float setpoint=desiredBoiler();
+const bool setpointValid=isfinite(setpoint);
+if(boilerValid){
+  int by=constrain(graphY(boilerTemp)-GY,0,GH);
+  boilerPoints[0]={0,(decltype(boilerPoints[0].y))by};
   boilerPoints[1]={(decltype(boilerPoints[0].x))GW,(decltype(boilerPoints[0].y))by};
-targetPoints[0]={0,(decltype(targetPoints[0].y))ty};
+  lv_line_set_points(boilerLine,boilerPoints,2);
+  lv_obj_remove_flag(boilerLine,LV_OBJ_FLAG_HIDDEN);
+} else lv_obj_add_flag(boilerLine,LV_OBJ_FLAG_HIDDEN);
+if(setpointValid){
+  int ty=constrain(graphY(setpoint)-GY,0,GH);
+  targetPoints[0]={0,(decltype(targetPoints[0].y))ty};
   targetPoints[1]={(decltype(targetPoints[0].x))GW,(decltype(targetPoints[0].y))ty};
-lv_line_set_points(boilerLine,boilerPoints,2);
-lv_line_set_points(targetLine,targetPoints,2);
-lv_obj_set_pos(marker,graphX(outsideTemp)-5,graphY(desiredBoiler())-5);
-snprintf(buffer,sizeof(buffer),"Aussen %.1f C  ->  Soll %.1f C",outsideTemp,desiredBoiler());
+  lv_line_set_points(targetLine,targetPoints,2);
+  lv_obj_remove_flag(targetLine,LV_OBJ_FLAG_HIDDEN);
+} else lv_obj_add_flag(targetLine,LV_OBJ_FLAG_HIDDEN);
+if(outsideValid && setpointValid){
+  lv_obj_set_pos(marker,graphX(outsideTemp)-5,graphY(setpoint)-5);
+  lv_obj_remove_flag(marker,LV_OBJ_FLAG_HIDDEN);
+} else lv_obj_add_flag(marker,LV_OBJ_FLAG_HIDDEN);
+char aText[24],rText[24],bText[24],sText[24];
+if(outsideValid) snprintf(aText,sizeof(aText),"%.1f C",outsideTemp); else snprintf(aText,sizeof(aText),"--- C");
+if(isfinite(roomTemp)) snprintf(rText,sizeof(rText),"%.1f C",roomTemp); else snprintf(rText,sizeof(rText),"--- C");
+if(boilerValid) snprintf(bText,sizeof(bText),"%.1f C",boilerTemp); else snprintf(bText,sizeof(bText),"--- C");
+if(setpointValid) snprintf(sText,sizeof(sText),"%.1f C",setpoint); else snprintf(sText,sizeof(sText),"--- C");
+snprintf(buffer,sizeof(buffer),"Aussen %s  ->  Soll %s",aText,sText);
 lv_label_set_text(graphLabel,buffer);
-snprintf(buffer,sizeof(buffer),"Raum %.1f C    Kessel IST %.1f C",roomTemp,boilerTemp);
+snprintf(buffer,sizeof(buffer),"Raum %s    Kessel IST %s",rText,bText);
 lv_label_set_text(tempLabel,buffer);
-  snprintf(buffer,sizeof(buffer),"Steilheit %.1f   Schaltschwellen %.1f / %.1f C",
-slope,desiredBoiler()-hysteresis/2,desiredBoiler()+hysteresis/2);
+if(setpointValid) snprintf(buffer,sizeof(buffer),"Steilheit %.1f   Schaltschwellen %.1f / %.1f C",slope,setpoint-hysteresis/2,setpoint+hysteresis/2);
+else snprintf(buffer,sizeof(buffer),"Steilheit %.1f   Schaltschwellen --- / --- C",slope);
 lv_label_set_text(curveLabel,buffer);
 snprintf(buffer,sizeof(buffer),"Brenner: %s   Pumpe: %s",burnerDemand?"EIN":"AUS",pumpDemand?"EIN":"AUS");
 lv_label_set_text(statusLabel,buffer);
 lv_label_set_text(modeLabel,simulationRunning?"SIM LAEUFT":"SIM PAUSE");
-  snprintf(buffer,sizeof(buffer),"Starts %lu  Laufzeit %lu:%02lu  Simulation %lu:%02lu",
-           (unsigned long)burnerStarts,
-           (unsigned long)(burnerSeconds/60),(unsigned long)(burnerSeconds%60),
-(unsigned long)(simulationSeconds/60),(unsigned long)(simulationSeconds%60));
+snprintf(buffer,sizeof(buffer),"Starts %lu  Laufzeit %lu:%02lu  Simulation %lu:%02lu",
+  (unsigned long)burnerStarts,
+  (unsigned long)(burnerSeconds/60),(unsigned long)(burnerSeconds%60),
+  (unsigned long)(simulationSeconds/60),(unsigned long)(simulationSeconds%60));
 lv_label_set_text(statsLabel,buffer);
   if(overviewInfo){
 struct tm t{};
     bool valid=clockNow(t);
     char stamp[32]="--:--";
 if(valid)strftime(stamp,sizeof(stamp),"%d.%m.%Y %H:%M",&t);
-    snprintf(buffer,sizeof(buffer),"Uhrzeit: %s%s\nSimulation: %s  Brenner: %s\nUrlaub: %s  Schaltuhr: %s\nStarts: %lu  Laufzeit: %.2f h\nOel geschaetzt: %.2f L (%.1f L/h)\nKessel: %.1f C  Soll: %.1f C",
+    snprintf(buffer,sizeof(buffer),"Uhrzeit: %s%s\nSimulation: %s  Brenner: %s\nUrlaub: %s  Schaltuhr: %s\nStarts: %lu  Laufzeit: %.2f h\nOel geschaetzt: %.2f L (%.1f L/h)\nKessel: %s  Soll: %s",
       stamp,valid?"":" (ungueltig)",simulationRunning?"LAEUFT":"PAUSE",burnerDemand?"EIN":"AUS",
       holidayActive?"AKTIV":"AUS",scheduleEnabled?"EIN":"AUS",
       (unsigned long)burnerStarts,burnerSeconds/3600.0f,
-burnerSeconds*oilLitersPerHour/3600.0f,oilLitersPerHour,boilerTemp,desiredBoiler());
+burnerSeconds*oilLitersPerHour/3600.0f,oilLitersPerHour,bText,sText);
 lv_label_set_text(overviewInfo,buffer);
     if(feedbackUntil && (int32_t)(millis()-feedbackUntil)>=0){
 if(touchFeedback)lv_label_set_text(touchFeedback,"Bereit");
@@ -1603,9 +1615,7 @@ server.handleClient();
 maintainOTA();
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
  pollSensors();
- if(!applyPotiTemperatures()){outsideTemp=NAN; roomTemp=NAN; boilerTemp=NAN; simulationRunning=false;
- setVirtualBurner(false);
- }}
+ if(!applyPotiTemperatures()){simulationRunning=false; setVirtualBurner(false); }}
 static uint32_t prevTick=millis();
 uint32_t now=millis();
 lv_tick_inc(now-prevTick);
