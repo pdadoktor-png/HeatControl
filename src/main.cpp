@@ -633,6 +633,17 @@ float setpoint = targetRoom + slope * (targetRoom-outsideTemp);
 return constrain(setpoint, 25.0f, 75.0f);
 }
 static String jsonFloat(float v, unsigned decimals=1) { return isfinite(v) ? String(v,decimals) : String("null"); }
+String burnerBlockReason(){
+ if(!sensor[0].valid || !sensor[2].valid)return "Sensorfehler A0/A2";
+ if(!isfinite(boilerTemp) || boilerTemp>=75.0f)return "Kesselgrenze 75 C";
+ if(manualMode && sensorFaultLatched)return "Handfreigabe nach Stoerung erforderlich";
+ if(!simulationRunning)return "Regelung gesperrt";
+ if(!manualMode && !automatic)return "Automatik ausgeschaltet";
+ if(!manualMode && !clockValid && (scheduleEnabled || holidayEnabled))return "Uhrzeit fehlt";
+ if(manualMode && !manualBurner)return "Handbetrieb: Brenner AUS";
+ if(!manualMode && burnerLockRemaining()>0 && !burnerDemand)return "Mindestpause";
+ return "Keine Stoerung";
+}
 String json() {
   String s="{\"inputMode\":"+String(inputMode)+",\"potiReady\":"+String(inputMode==1 && sensor[0].valid && sensor[2].valid?"true":"false")+",\"outside\":"+jsonFloat(outsideTemp,1)+",\"room\":"+jsonFloat(roomTemp,1)+
     ",\"boiler\":"+jsonFloat(boilerTemp,1)+",\"setpoint\":"+jsonFloat(desiredBoiler(),1)+
@@ -650,6 +661,8 @@ String json() {
     ",\"pumpFrostRequest\":"+String(pumpFrostRequest?"true":"false")+
     ",\"pumpSummerLock\":"+String(pumpSummerLock?"true":"false")+
     ",\"burnerDemand\":"+String(burnerDemand?"true":"false")+
+    ",\"burnerBlockReason\":\""+burnerBlockReason()+"\""+
+    ",\"sensorFaultLatched\":"+String(sensorFaultLatched?"true":"false")+
     ",\"simulationRunning\":"+String(simulationRunning?"true":"false")+
     ",\"simCommandSequence\":"+String(simCommandSequence)+
     ",\"burnerStarts\":"+String(burnerStarts)+
@@ -1159,6 +1172,8 @@ burnerDemand?"EIN":"AUS",lock,
 pumpDemand?"EIN":"AUS",pumpText.c_str(),
 overrun,pumpSummerLock?"JA":"NEIN",pumpFrostRequest?"JA":"NEIN",
 fault,clockValid?"OK":"FEHLT",holidayActive?"JA":"NEIN");
+// Stoerungsgrund auf der Uebersicht statt pauschaler Statusmeldung.
+if(touchFeedback && feedbackUntil==0)lv_label_set_text(touchFeedback,burnerBlockReason().c_str());
 lv_label_set_text(overviewInfo,buffer);
     if(feedbackUntil && (int32_t)(millis()-feedbackUntil)>=0){
 if(touchFeedback)lv_label_set_text(touchFeedback,"Bereit");
