@@ -990,9 +990,10 @@ lv_obj_set_style_bg_color(root,lv_color_hex(0x142434),0);
 lv_obj_set_style_text_color(root,lv_color_hex(0xFFFFFF),0);
 
 makeLabel(root,"75",8,7);
-  makeLabel(root,"20",8,92); // Kesseltemperatur-Achse
-// Linke X-Achsenbeschriftung (-20) bewusst ausgeblendet.
-  makeLabel(root,"+25 C",GX+GW-40,137);
+  makeLabel(root,"20",8,92); // Unterer Wert der Kesseltemperatur-Y-Achse
+  // Aussentemperatur-X-Achse: unmittelbar unter dem Diagramm, links -20, rechts +25.
+  makeLabel(root,"-20",GX,GH+GY+3);
+  makeLabel(root,"+25 C",GX+GW-52,GH+GY+3);
   // Linie in lokalen Koordinaten; statisches Array bleibt dauerhaft gueltig.
 curveLine=lv_line_create(root);
 lv_obj_set_pos(curveLine,GX,GY);
