@@ -54,7 +54,7 @@ ArduinoOTA.handle();
 }
 WebServer server(80);
 Preferences prefs;
-float outsideTemp=5, roomTemp=20, boilerTemp=42;
+float outsideTemp=NAN, roomTemp=NAN, boilerTemp=NAN;
 float slope=1.2f, targetRoom=21, hysteresis=5;
 uint16_t minBurnerOnSeconds=30, minBurnerOffSeconds=20;
 // Nur Testbetrieb
@@ -80,7 +80,7 @@ bool automatic=true, burnerDemand=false;
 bool pumpDemand=false;
 // Vor historySample() deklariert
 // 0: Software-Simulation, 1: Poti-Test (ADS1115), 2: NTC (gesperrt bis Kalibrierung).
-uint8_t inputMode=2;
+uint8_t inputMode=1;
 static constexpr float POT_MAX_R=20000.0f;
 bool simulationRunning=false;
 uint32_t simCommandSequence=0;
@@ -506,7 +506,6 @@ r.valid=isfinite(r.temp)&&r.ohms>=100.0f&&r.ohms<=POT_MAX_R*1.05f;
 adsGoodPolls++;
 }
 bool applyPotiTemperatures(){
-if(inputMode!=1)return false;
 float values[3];
   for (int i = 0; i < 3; i += 2) {
     if (!sensor[i].valid || !isfinite(sensor[i].ohms) || sensor[i].ohms < 0 || sensor[i].ohms > POT_MAX_R * 1.05f) {
@@ -515,9 +514,7 @@ float values[3];
     values[i] = sensor[i].temp;
   }
   outsideTemp = values[0];
-  if (sensor[1].valid && isfinite(sensor[1].temp)) {
-    roomTemp = sensor[1].temp;  // Nur Anzeige und Aufzeichnung.
-  }
+  roomTemp = sensor[1].valid ? sensor[1].temp : NAN;
   boilerTemp = values[2];
 return true;
 }
@@ -993,7 +990,7 @@ lv_obj_set_style_bg_color(root,lv_color_hex(0x142434),0);
 lv_obj_set_style_text_color(root,lv_color_hex(0xFFFFFF),0);
 
 makeLabel(root,"75",8,7);
-  makeLabel(root,"20",8,92);
+  // Doppelte 20-Beschriftung entfernt.
 makeLabel(root,"-20",GX,137);
   makeLabel(root,"+25 C",GX+GW-40,137);
   // Linie in lokalen Koordinaten; statisches Array bleibt dauerhaft gueltig.
@@ -1345,7 +1342,7 @@ oilLitersPerHour=constrain(prefs.getFloat("oilRate",2.0f),0.1f,20.f);
 historyInit();
 eventLog("SYSTEM","Neustart; PCF8574 wird initialisiert; Niedervolt-Pruefstand");
 initProgram();
- inputMode=constrain((int)prefs.getUChar("inputMode",0),0,1);
+ inputMode=1; // Ausschliesslich ADS1115/NTC
 setenv("TZ",tzRule,1);
  tzset();
 slope=constrain(prefs.getFloat("slope",1.2f),0.2f,3.f);
@@ -1454,7 +1451,7 @@ server.send(200,"text/html; charset=utf-8",R"PAGE(<!doctype html><html lang="de"
 });
  server.on("/api/inputmode",HTTP_POST,[]{
 int mode=server.arg("mode").toInt();
-if(mode!=0 && mode!=1){server.send(400,"text/plain","Unbekannte Betriebsart");
+if(mode!=1){server.send(400,"text/plain","Unbekannte Betriebsart");
    return;
    }
 inputMode=(uint8_t)mode;
@@ -1507,9 +1504,9 @@ simulationRunning=false;
      burnerStarts=0;
      burnerSeconds=0;
      simulationSeconds=0;
-outsideTemp=5;
-     roomTemp=20;
-     boilerTemp=42;
+outsideTemp=NAN;
+     roomTemp=NAN;
+     boilerTemp=NAN;
    }
 else {server.send(400,"text/plain","Unbekannter Simulationsbefehl");
    return;
@@ -1605,7 +1602,7 @@ server.handleClient();
 maintainOTA();
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
  pollSensors();
- if(inputMode==1 && !applyPotiTemperatures()){simulationRunning=false;
+ if(!applyPotiTemperatures()){outsideTemp=NAN; roomTemp=NAN; boilerTemp=NAN; simulationRunning=false;
  setVirtualBurner(false);
  }}
 static uint32_t prevTick=millis();
@@ -1619,12 +1616,9 @@ if(millis()-lastTick>=1000){lastTick=millis();
  float set=desiredBoiler();
 bool previousDemand=burnerDemand;
    bool permitted=automatic && simulationRunning && (clockValid || (!scheduleEnabled && !holidayEnabled)) &&
-(inputMode!=1 || (sensor[0].valid && sensor[2].valid));
+(sensor[0].valid && sensor[2].valid);
 updateVirtualBurner(set,permitted);
-   if(simulationRunning && inputMode==0){
-boilerTemp=constrain(boilerTemp+(burnerDemand?HEATING_C_PER_S:-COOLING_C_PER_S)*SIM_STEP_SECONDS,0.0f,110.0f);
-set=desiredBoiler();
-   }
+   // Keine Temperatursimulation; Kesseltemperatur ausschliesslich ADS1115.
 if(!permitted)setVirtualBurner(false);
 updateVirtualPump(permitted);
 relayUpdate();
