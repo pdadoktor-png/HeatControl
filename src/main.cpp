@@ -630,9 +630,10 @@ if (!isfinite(outsideTemp)) return NAN;
 float setpoint = targetRoom + slope * (targetRoom-outsideTemp);
 return constrain(setpoint, 25.0f, 75.0f);
 }
+static String jsonFloat(float v, unsigned decimals=1) { return isfinite(v) ? String(v,decimals) : String("null"); }
 String json() {
-  String s="{\"inputMode\":"+String(inputMode)+",\"potiReady\":"+String(inputMode==1 && sensor[0].valid && sensor[2].valid?"true":"false")+",\"outside\":"+String(outsideTemp,1)+",\"room\":"+String(roomTemp,1)+
-    ",\"boiler\":"+String(boilerTemp,1)+",\"setpoint\":"+String(desiredBoiler(),1)+
+  String s="{\"inputMode\":"+String(inputMode)+",\"potiReady\":"+String(inputMode==1 && sensor[0].valid && sensor[2].valid?"true":"false")+",\"outside\":"+jsonFloat(outsideTemp,1)+",\"room\":"+jsonFloat(roomTemp,1)+
+    ",\"boiler\":"+jsonFloat(boilerTemp,1)+",\"setpoint\":"+jsonFloat(desiredBoiler(),1)+
     ",\"slope\":"+String(slope,2)+",\"targetRoom\":"+String(targetRoom,1)+
     ",\"automatic\":"+String(automatic?"true":"false")+
     ",\"pumpDemand\":"+String(pumpDemand?"true":"false")+
