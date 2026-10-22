@@ -1128,8 +1128,8 @@ else snprintf(buffer,sizeof(buffer),"Steilheit %.1f   Schaltschwellen --- / --- 
 lv_label_set_text(curveLabel,buffer);
 snprintf(buffer,sizeof(buffer),"Brenner: %s   Pumpe: %s",burnerDemand?"EIN":"AUS",pumpDemand?"EIN":"AUS");
 lv_label_set_text(statusLabel,buffer);
-lv_label_set_text(modeLabel,simulationRunning?"SIM LAEUFT":"SIM PAUSE");
-snprintf(buffer,sizeof(buffer),"Starts %lu  Laufzeit %lu:%02lu  Simulation %lu:%02lu",
+lv_label_set_text(modeLabel,simulationRunning?"REGELUNG AKTIV":"REGELUNG GESPERRT");
+snprintf(buffer,sizeof(buffer),"Starts %lu  Laufzeit %lu:%02lu  Betrieb %lu:%02lu",
   (unsigned long)burnerStarts,
   (unsigned long)(burnerSeconds/60),(unsigned long)(burnerSeconds%60),
   (unsigned long)(simulationSeconds/60),(unsigned long)(simulationSeconds%60));
@@ -1144,14 +1144,14 @@ const unsigned long overrun=(unsigned long)pumpOverrunRemaining();
 const unsigned long lock=(unsigned long)burnerLockRemaining();
 const char *fault=(!sensor[0].valid||!sensor[2].valid)?"SENSOR A0/A2":(isfinite(boilerTemp)&&boilerTemp>=75.f?"KESSEL >=75 C":"OK");
 snprintf(buffer,sizeof(buffer),
-"Uhr: %s  %s  Test: %s\n"
+"Uhr: %s  %s  Regelung: %s\n"
 "Aussen %s  Raum %s\n"
 "Kessel %s  Soll %s  S %.1f\n"
 "Brenner %s  Sperre %lu s\n"
 "Pumpe %s  %s\n"
 "Nachlauf %lu s  Sommer %s  Frost %s\n"
 "Sensoren %s  Uhr %s  Urlaub %s",
-stamp,manualMode?"HAND":"AUTOMATIK",simulationRunning?"LAEUFT":"PAUSE",
+stamp,manualMode?"HAND":"AUTOMATIK",simulationRunning?"AKTIV":"GESPERRT",
 aText,rText,bText,sText,slope,
 burnerDemand?"EIN":"AUS",lock,
 pumpDemand?"EIN":"AUS",pumpText.c_str(),
