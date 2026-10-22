@@ -77,6 +77,7 @@ int testWeekday=0, testMinute=720;
 bool clockValid=false, holidayActive=false, comfortActive=true;
 const char *tzRule="CET-1CEST,M3.5.0/2,M10.5.0/3";
 bool automatic=true, burnerDemand=false;
+bool manualMode=false, manualBurner=false, manualPump=false;
 bool pumpDemand=false;
 // Vor historySample() deklariert
 // 0: Software-Simulation, 1: Poti-Test (ADS1115), 2: NTC (gesperrt bis Kalibrierung).
@@ -636,6 +637,7 @@ String json() {
     ",\"boiler\":"+jsonFloat(boilerTemp,1)+",\"setpoint\":"+jsonFloat(desiredBoiler(),1)+
     ",\"slope\":"+String(slope,2)+",\"targetRoom\":"+String(targetRoom,1)+
     ",\"automatic\":"+String(automatic?"true":"false")+
+    ",\"manualMode\":"+String(manualMode?"true":"false")+
     ",\"pumpDemand\":"+String(pumpDemand?"true":"false")+
     ",\"pumpMode\":"+String(pumpMode)+
     ",\"pumpOverrun\":"+String(pumpOverrunSeconds)+
@@ -1283,7 +1285,7 @@ eventLog("RELAIS","Niedervolt-Pruefstand: Ausgaenge nach I2C-Wiedererkennung fre
 Serial.println("PCF8574: nachtraeglich erkannt, Pruefstand-Ausgaenge freigegeben");
   }
 uint8_t wanted=PCF_OFF;
-  if(relayBenchAuto && !relayOtaInProgress && simulationRunning && automatic && pcfOutputHealthy){
+  if(relayBenchAuto && !relayOtaInProgress && simulationRunning && (automatic || manualMode) && pcfOutputHealthy){
 if(burnerDemand)wanted &= (uint8_t)~0x01;
 if(pumpDemand)wanted &= (uint8_t)~0x02;
   }
@@ -1485,7 +1487,15 @@ prefs.putFloat("pumpSummer",summerCutoffC);
    prefs.putFloat("pumpFrost",frostThresholdC);
 server.send(200,"application/json",json());
 });
- server.on("/api/config",HTTP_POST,[]{
+ server.on("/api/manual",HTTP_POST,[]{
+String mode=server.arg("mode");
+if(mode=="auto"){manualMode=false;manualBurner=false;manualPump=false;automatic=true;setVirtualBurner(false);pumpDemand=false;}
+else if(mode=="manual"){manualMode=true;automatic=false;manualBurner=false;manualPump=false;setVirtualBurner(false);pumpDemand=false;}
+else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1";manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
+else {server.send(400,"text/plain","Ungueltiger Handbefehl");return;}
+server.send(200,"application/json",json());
+});
+server.on("/api/config",HTTP_POST,[]{
 if(server.hasArg("outside"))outsideTemp=constrain(server.arg("outside").toFloat(),-30.f,45.f);
 if(server.hasArg("room"))roomTemp=constrain(server.arg("room").toFloat(),0.f,45.f);
 if(server.hasArg("boiler"))boilerTemp=constrain(server.arg("boiler").toFloat(),0.f,110.f);
@@ -1496,7 +1506,7 @@ if(server.hasArg("minBurnerOff"))minBurnerOffSeconds=constrain(server.arg("minBu
 if(server.hasArg("targetRoom")){comfortRoom=constrain(server.arg("targetRoom").toFloat(),10.f,28.f);
    prefs.putFloat("comfort",comfortRoom);
    }
-automatic=server.arg("automatic")=="1";
+automatic=server.arg("automatic")=="1";manualMode=false;manualBurner=false;manualPump=false;
 prefs.putFloat("slope",slope);
    prefs.putFloat("hyst",hysteresis);
    prefs.putUInt("minOn",minBurnerOnSeconds);
@@ -1627,12 +1637,19 @@ if(millis()-lastTick>=1000){lastTick=millis();
  evaluateProgram();
  float set=desiredBoiler();
 bool previousDemand=burnerDemand;
-   bool permitted=automatic && simulationRunning && (clockValid || (!scheduleEnabled && !holidayEnabled)) &&
-(sensor[0].valid && sensor[2].valid);
-updateVirtualBurner(set,permitted);
+   bool sensorsOk=sensor[0].valid && sensor[2].valid;
+bool permitted=automatic && !manualMode && simulationRunning && (clockValid || (!scheduleEnabled && !holidayEnabled)) && sensorsOk;
+if(manualMode){
+bool safe=simulationRunning && sensorsOk && isfinite(boilerTemp) && boilerTemp<75.0f;
+setVirtualBurner(safe && manualBurner);
+}else updateVirtualBurner(set,permitted);
    // Keine Temperatursimulation; Kesseltemperatur ausschliesslich ADS1115.
-if(!permitted)setVirtualBurner(false);
-updateVirtualPump(permitted);
+if(!permitted && !manualMode)setVirtualBurner(false);
+if(manualMode){
+bool safe=simulationRunning && sensorsOk && isfinite(boilerTemp) && boilerTemp<75.0f;
+pumpDemand=simulationRunning && (manualPump || (manualBurner && safe));
+pumpHeatRequest=false;pumpFrostRequest=false;
+}else updateVirtualPump(permitted);
 relayUpdate();
    // Nur Zustandswechsel protokollieren, nicht jede Sekunde.
 static bool logInit=false,prevPump=false,prevPermitted=false,prevSim=false;
