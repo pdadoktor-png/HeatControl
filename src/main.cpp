@@ -85,6 +85,7 @@ uint8_t inputMode=1;
 static constexpr float POT_MAX_R=20000.0f;
 bool simulationRunning=true; // Automatischer Start nur am Niedervolt-Pruefstand.
 static bool sensorFaultLatched=false; // Hand-Brenner bleibt nach Sensor-/Grenzwertfehler AUS.
+static uint8_t previousSensorFaultMask=255; // 255 = erster Messzyklus
 uint32_t simCommandSequence=0;
 // Simuliertes thermisches Modell, kein realer Brenner.
 // Bei Brenner EIN: +0.20 C/s, bei AUS: -0.06 C/s (vereinfachtes Modell).
@@ -723,7 +724,7 @@ static void touchManualOutputs(lv_event_t *e){
  if(!manualMode)return;
  intptr_t action=(intptr_t)lv_event_get_user_data(e);
  manualBurner=action==1 && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;manualPump=action==1 || action==2;
- if(manualBurner) sensorFaultLatched=false;
+ if(manualBurner && sensorFaultLatched){sensorFaultLatched=false;eventLog("STOERUNG","Hand-Brenner nach gueltigen Sensorwerten erneut freigegeben");}
  eventLog("BEDIENUNG",String("Touch: Brenner ")+(manualBurner?"EIN":"AUS")+", Pumpe "+(manualPump?"EIN":"AUS"));
  refreshDisplay();
 }
@@ -1560,7 +1561,7 @@ String mode=server.arg("mode");
 if(mode=="auto"){manualMode=false;manualBurner=false;manualPump=false;automatic=true;setVirtualBurner(false);pumpDemand=false;}
 else if(mode=="manual"){manualMode=true;automatic=false;manualBurner=false;manualPump=false;setVirtualBurner(false);pumpDemand=false;}
 else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1" && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;
-if(manualBurner) sensorFaultLatched=false;manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
+if(manualBurner && sensorFaultLatched){sensorFaultLatched=false;eventLog("STOERUNG","Hand-Brenner nach gueltigen Sensorwerten erneut freigegeben");}manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
 else {server.send(400,"text/plain","Ungueltiger Handbefehl");return;}
 eventLog("BETRIEB",String("Web: ")+(manualMode?"Handbetrieb":"Automatik")+", Brenner "+(manualBurner?"EIN":"AUS")+", Pumpe "+(manualPump?"EIN":"AUS"));
 server.send(200,"application/json",json());
@@ -1670,7 +1671,19 @@ server.handleClient();
 maintainOTA();
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
  pollSensors();
- if(!applyPotiTemperatures()){setVirtualBurner(false); manualBurner=false; manualPump=false; sensorFaultLatched=true; pumpDemand=false; relayUpdate(); }}
+ bool sensorValuesOk=applyPotiTemperatures();
+ uint8_t faultMask=(!sensor[0].valid?1:0)|(!sensor[1].valid?2:0)|(!sensor[2].valid?4:0);
+ if(previousSensorFaultMask==255){
+   eventLog("SENSOREN",faultMask==0?"Alle drei Sensoren gueltig":String("Startfehler: ")+((faultMask&1)?"A0 ":"")+((faultMask&2)?"A1 ":"")+((faultMask&4)?"A2":""));
+ }else if(faultMask!=previousSensorFaultMask){
+   const uint8_t failed=faultMask & ~previousSensorFaultMask;
+   const uint8_t recovered=previousSensorFaultMask & ~faultMask;
+   if(failed)eventLog("SENSORFEHLER",String("Ausfall: ")+((failed&1)?"A0 ":"")+((failed&2)?"A1 ":"")+((failed&4)?"A2":""));
+   if(recovered)eventLog("SENSOREN",String("Wiederhergestellt: ")+((recovered&1)?"A0 ":"")+((recovered&2)?"A1 ":"")+((recovered&4)?"A2":""));
+ }
+ previousSensorFaultMask=faultMask;
+ if(!sensorValuesOk){setVirtualBurner(false); manualBurner=false; manualPump=false; sensorFaultLatched=true; pumpDemand=false; relayUpdate();}
+ }
 static uint32_t prevTick=millis();
 uint32_t now=millis();
 lv_tick_inc(now-prevTick);
