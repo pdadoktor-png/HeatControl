@@ -99,7 +99,7 @@ async function heatControlSimCommand(cmd){
 async function post(path,data){let r=await fetch(path,{method:'POST',body:new URLSearchParams(data)});if(!r.ok){feedback('Fehler: '+await r.text());return false}feedback('Einstellung gespeichert');return true}
 async function saveInputMode(){if(await post('/api/inputmode',{mode:$('inputMode').value})){feedback('Betriebsart gespeichert');await load()}}
 async function savePump(){let d={};for(let k of ['pumpMode','pumpOverrun','summerCutoff','frostThreshold'])d[k]=$(k).value;if(await post('/api/pump',d))await load()}
-async function saveCurve(){let d={};for(let k of ['outside','room','boiler','slope','hysteresis','minBurnerOn','minBurnerOff'])d[k]=$(k).value;d.automatic=$('automatic').checked?'1':'0';if(await post('/api/config',d))await load()}
+async function saveCurve(){let d={};for(let k of ['outside','room','boiler','slope','hysteresis','minBurnerOn','minBurnerOff'])d[k]=$(k).value;d.automatic=$('automatic').checked?'1':'0';if(await post('/api/config',d)){await load();const r=await fetch('/api/status',{cache:'no-store'});if(r.ok){const j=await r.json();$('slope').value=j.slope;$('hysteresis').value=j.hysteresis;$('minBurnerOn').value=j.minBurnerOn;$('minBurnerOff').value=j.minBurnerOff;$('automatic').checked=j.automatic;feedback('Heizkurve gespeichert: Steilheit '+j.slope)}}}
 const toTime=m=>String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');const fromTime=s=>{let a=s.split(':');return +a[0]*60+(+a[1])};
 function changeDay(){if(program && currentDay>=0)collectPhases(currentDay);renderPhases();}
 let currentDay=-1;
