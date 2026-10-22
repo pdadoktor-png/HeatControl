@@ -652,7 +652,9 @@ return constrain(setpoint, 25.0f, 75.0f);
 }
 static String jsonFloat(float v, unsigned decimals=1) { return isfinite(v) ? String(v,decimals) : String("null"); }
 String burnerBlockReason(){
- if(!sensor[0].valid || !sensor[2].valid)return "Sensorfehler A0/A2";
+ if(!sensor[0].valid && !sensor[2].valid)return "Sensorfehler A0 und A2";
+ if(!sensor[0].valid)return "Sensorfehler A0 (Aussen)";
+ if(!sensor[2].valid)return "Sensorfehler A2 (Kessel)";
  if(!isfinite(boilerTemp) || boilerTemp>=75.0f)return "Kesselgrenze 75 C";
  if(manualMode && sensorFaultLatched)return "Handfreigabe nach Stoerung erforderlich";
  if(!simulationRunning)return "Regelung gesperrt";
@@ -1177,7 +1179,7 @@ if(valid)strftime(stamp,sizeof(stamp),"%d.%m.%Y %H:%M",&t);
     const String pumpText=manualMode?(pumpDemand?"Handbetrieb":"AUS"):pumpReason();
 const unsigned long overrun=(unsigned long)pumpOverrunRemaining();
 const unsigned long lock=(unsigned long)burnerLockRemaining();
-const char *fault=(!sensor[0].valid||!sensor[2].valid)?"SENSOR A0/A2":(isfinite(boilerTemp)&&boilerTemp>=75.f?"KESSEL >=75 C":"OK");
+const char *fault=(!sensor[0].valid && !sensor[2].valid)?"A0+A2":(!sensor[0].valid?"A0":(!sensor[2].valid?"A2":(isfinite(boilerTemp)&&boilerTemp>=75.f?"KESSEL >=75 C":"OK")));
 snprintf(buffer,sizeof(buffer),
 "Uhr: %s  %s  Regelung: %s\n"
 "Aussen %s  Raum %s\n"
