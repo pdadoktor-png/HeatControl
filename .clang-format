@@ -1,0 +1,24 @@
+BasedOnStyle: LLVM
+Language: Cpp
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: None
+AllowShortLambdasOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+IndentCaseLabels: true
+PointerAlignment: Left
+SpaceBeforeParens: ControlStatements
+SortIncludes: Never
+BinPackArguments: false
+BinPackParameters: false
+BreakBeforeBinaryOperators: None
+ReflowComments: false
+
+# clang-format 23: Klammern um ungekapselte Kontrollanweisungen
+InsertBraces: true

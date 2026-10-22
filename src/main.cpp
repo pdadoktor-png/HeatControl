@@ -1,0 +1,1663 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <ArduinoOTA.h>
+#include <WebServer.h>
+#include <Preferences.h>
+#include <LittleFS.h>
+#include <time.h>
+#include <math.h>
+#include <esp32_smartdisplay.h>
+#include <lvgl.h>
+#include <Wire.h>
+#include <Adafruit_ADS1X15.h>
+
+// HeatControl v0.5.9: Strukturierung des Quellcodes, unveraenderte Regelungslogik.
+// Basis: v0.5.9, Simulation mit Niedervolt-Pruefstand-Automatik.
+// OTA nur im Heim-WLAN (STA), nie im offenen Test-Access-Point.
+#ifndef HEATCONTROL_OTA_PASSWORD
+#define HEATCONTROL_OTA_PASSWORD ""
+#endif
+static void relayOff();
+static bool relayPinsInitialized = false;
+// PCF8574 erkannt und initialisiert
+static String relayDiagnosticJson();
+static bool relayArmed=false;
+static bool relayOtaInProgress=false;
+static bool otaStarted=false;
+static void maintainOTA(){
+  if(WiFi.status()!=WL_CONNECTED){
+if(otaStarted){ArduinoOTA.end();
+    otaStarted=false;
+    Serial.println("OTA: WLAN getrennt");
+    }
+return;
+  }
+  if(!otaStarted){
+    if(strlen(HEATCONTROL_OTA_PASSWORD)<8){
+static bool warned=false;
+if(!warned){Serial.println("OTA: deaktiviert – Passwort in platformio.ini setzen (mind. 8 Zeichen)");
+      warned=true;
+      }
+return;
+    }
+ArduinoOTA.setHostname("heatcontrol");
+ArduinoOTA.setPassword(HEATCONTROL_OTA_PASSWORD);
+ArduinoOTA.onStart([](){relayOtaInProgress=true;relayArmed=false;relayOff();Serial.println("OTA: Firmwaretransfer gestartet");});
+ArduinoOTA.onEnd([](){Serial.println("OTA: abgeschlossen, Neustart");});
+ArduinoOTA.onError([](ota_error_t error){relayOtaInProgress=false;relayOff();Serial.printf("OTA: Fehler %u\n",(unsigned)error);});
+ArduinoOTA.begin();
+    otaStarted=true;
+Serial.print("OTA: bereit unter ");
+    Serial.println(WiFi.localIP());
+  }
+ArduinoOTA.handle();
+}
+WebServer server(80);
+Preferences prefs;
+float outsideTemp=5, roomTemp=20, boilerTemp=42;
+float slope=1.2f, targetRoom=21, hysteresis=5;
+uint16_t minBurnerOnSeconds=30, minBurnerOffSeconds=20;
+// Nur Testbetrieb
+uint32_t lastBurnerTransitionMs=0;
+bool burnerTransitionKnown=false;
+float comfortRoom=21.0f, reducedRoom=17.0f, holidayRoom=15.0f;
+bool scheduleEnabled=false, holidayEnabled=false;
+// 0=Montag .. 6=Sonntag; bis zu 3 Zeitfenster je Tag.
+struct Phase {
+uint16_t from;
+uint16_t to;
+bool enabled;
+};
+Phase phases[7][3];
+int selectedDay=0, selectedPhase=0;
+int64_t holidayStart=0, holidayEnd=0;
+// Unix-Sekunden, Endzeit exklusiv
+bool testClockEnabled=false;
+int testWeekday=0, testMinute=720;
+bool clockValid=false, holidayActive=false, comfortActive=true;
+const char *tzRule="CET-1CEST,M3.5.0/2,M10.5.0/3";
+bool automatic=true, burnerDemand=false;
+bool pumpDemand=false;
+// Vor historySample() deklariert
+// 0: Software-Simulation, 1: Poti-Test (ADS1115), 2: NTC (gesperrt bis Kalibrierung).
+uint8_t inputMode=2;
+static constexpr float POT_MAX_R=20000.0f;
+bool simulationRunning=false;
+uint32_t simCommandSequence=0;
+// Simuliertes thermisches Modell, kein realer Brenner.
+// Bei Brenner EIN: +0.20 C/s, bei AUS: -0.06 C/s (vereinfachtes Modell).
+static constexpr float HEATING_C_PER_S=0.20f;
+static constexpr float COOLING_C_PER_S=0.06f;
+static constexpr float SIM_STEP_SECONDS=1.0f;
+unsigned long lastTick=0;
+uint32_t burnerStarts=0, burnerSeconds=0, simulationSeconds=0;
+float oilLitersPerHour=2.0f;
+// Schaetzwert, keine Messung
+// Statistik: 5-Minuten-Samples, 7 Tage im RAM, optional in LittleFS gespeichert.
+// Alle Laufzeiten und Verbrauchswerte stammen AUSSCHLIESSLICH aus der Simulation.
+static constexpr size_t HISTORY_MAX=2016;
+#include "HistorySample.h"
+static HistorySample history[HISTORY_MAX];
+static size_t historyCount=0,historyHead=0;
+static bool historyFS=false;
+static uint32_t pumpSeconds=0;
+static uint32_t lastHistoryMs=0;
+static uint32_t historyWrites=0;
+static uint32_t historyWriteErrors=0;
+static const char *HISTORY_FILE="/history.csv";
+// Ereignislog: simulierte Anforderungen, keine Rueckmeldung vom realen Brenner.
+static constexpr size_t EVENT_MAX=160;
+struct EventEntry {
+uint32_t epoch;
+uint32_t uptime;
+String kind;
+String detail;
+};
+static EventEntry events[EVENT_MAX];
+static size_t eventHead=0,eventCount=0;
+static uint32_t eventFileErrors=0;
+static String csvSafe(String s){s.replace(";",",");
+s.replace("\r"," ");
+s.replace("\n"," ");
+return s;
+}
+static void eventLog(const String &kind,const String &detail){
+time_t now=time(nullptr);
+EventEntry e={(uint32_t)(now>1700000000?now:0),millis()/1000,kind,detail};
+events[eventHead]=e;
+  eventHead=(eventHead+1)%EVENT_MAX;
+if(eventCount<EVENT_MAX)eventCount++;
+Serial.printf("EVENT [%s] %s\n",kind.c_str(),detail.c_str());
+if(!historyFS)return;
+File f=LittleFS.open("/events.csv","a");
+if(!f){eventFileErrors++;
+  return;
+  }
+size_t n=f.printf("%lu;%lu;%s;%s\n",(unsigned long)e.epoch,(unsigned long)e.uptime,csvSafe(kind).c_str(),csvSafe(detail).c_str());
+size_t size=f.size();
+  f.close();
+  if(!n)eventFileErrors++;
+  if(size>120000){
+LittleFS.remove("/events-old.csv");
+if(!LittleFS.rename("/events.csv","/events-old.csv"))eventFileErrors++;
+  }
+}
+static void eventSendJson(){
+server.sendHeader("Cache-Control","no-store");
+server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200,"application/json","");
+server.sendContent(String("{\"simulationOnly\":true,\"storage\":\"")+(historyFS?"LittleFS":"RAM")+"\",\"writeErrors\":"+String(eventFileErrors)+",\"events\":[");
+  for(size_t i=0;i<eventCount;i++){
+const EventEntry &e=events[(eventHead+EVENT_MAX-eventCount+i)%EVENT_MAX];
+String d=e.detail;
+    d.replace("\\","\\\\");
+    d.replace("\"","\\\"");
+server.sendContent(String(i?",":"")+"{\"t\":"+String(e.epoch)+",\"uptime\":"+String(e.uptime)+",\"type\":\""+e.kind+"\",\"detail\":\""+d+"\"}");
+  }
+server.sendContent("]}");
+  server.sendContent("");
+}
+static void eventSendCsv(){
+server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-events.csv");
+server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200,"text/csv; charset=utf-8","");
+server.sendContent("epoch;uptime_s;typ;details\n");
+  // Alle gespeicherten Ereignisse aus Flash (einschliesslich rotierter Datei).
+  if(historyFS){
+    for(const char *name : {"/events-old.csv","/events.csv"}){
+File f=LittleFS.open(name,"r");
+      if(f){while(f.available()){String line=f.readStringUntil('\n');
+      server.sendContent(line+"\n");
+      }f.close();
+      }
+    }
+  }else{
+    for(size_t i=0;i<eventCount;i++){
+const EventEntry &e=events[(eventHead+EVENT_MAX-eventCount+i)%EVENT_MAX];
+server.sendContent(String(e.epoch)+";"+String(e.uptime)+";"+csvSafe(e.kind)+";"+csvSafe(e.detail)+"\n");
+    }
+  }
+server.sendContent("");
+}
+static void historyInsert(const HistorySample &r){
+history[historyHead]=r;
+  historyHead=(historyHead+1)%HISTORY_MAX;
+if(historyCount<HISTORY_MAX)historyCount++;
+}
+static HistorySample historyAt(size_t i){
+return history[(historyHead+HISTORY_MAX-historyCount+i)%HISTORY_MAX];
+}
+static void historyInit(){
+historyFS=LittleFS.begin(false);
+if(!historyFS){Serial.println("STATISTIK: LittleFS nicht bereit, RAM-Aufzeichnung aktiv");
+  return;
+  }
+File f=LittleFS.open(HISTORY_FILE,"r");
+  if(f){
+    while(f.available()){
+String line=f.readStringUntil('\n');
+unsigned long e,u,st,bs,ps;
+      int a,r,b,fl;
+      if(sscanf(line.c_str(),"%lu,%lu,%d,%d,%d,%d,%lu,%lu,%lu",&e,&u,&a,&r,&b,&fl,&st,&bs,&ps)==9){
+HistorySample h={(uint32_t)e,(uint32_t)u,(int16_t)a,(int16_t)r,(int16_t)b,(uint8_t)fl,(uint32_t)st,(uint32_t)bs,(uint32_t)ps};
+        historyInsert(h);
+      }
+    }
+f.close();
+  }
+Serial.printf("STATISTIK: %u Datensaetze geladen\n",(unsigned)historyCount);
+}
+static void historySample(){
+time_t t=time(nullptr);
+  HistorySample h={t>1700000000?(uint32_t)t:0,(uint32_t)(millis()/1000),
+    (int16_t)lroundf(outsideTemp*10),(int16_t)lroundf(roomTemp*10),(int16_t)lroundf(boilerTemp*10),
+(uint8_t)((burnerDemand?1:0)|(pumpDemand?2:0)|(simulationRunning?4:0)),burnerStarts,burnerSeconds,pumpSeconds};
+historyInsert(h);
+if(!historyFS)return;
+File f=LittleFS.open(HISTORY_FILE,"a");
+if(!f){historyWriteErrors++;
+  return;
+  }
+size_t n=f.printf("%lu,%lu,%d,%d,%d,%u,%lu,%lu,%lu\n",(unsigned long)h.epoch,(unsigned long)h.uptime,(int)h.outside10,(int)h.room10,(int)h.boiler10,(unsigned)h.flags,(unsigned long)h.starts,(unsigned long)h.burnerSec,(unsigned long)h.pumpSec);
+f.close();
+  if(n>0)historyWrites++;
+  else historyWriteErrors++;
+  // Rotation nur selten: bei ca. 180 KB Datei auf die letzten 7 Tage kuerzen.
+  if(LittleFS.exists(HISTORY_FILE)){
+File check=LittleFS.open(HISTORY_FILE,"r");
+    size_t size=check?check.size():0;
+    if(check)check.close();
+    if(size>180000){
+File out=LittleFS.open("/history.tmp","w");
+if(out){for(size_t i=0;i<historyCount;i++){HistorySample x=historyAt(i);
+      out.printf("%lu,%lu,%d,%d,%d,%u,%lu,%lu,%lu\n",(unsigned long)x.epoch,(unsigned long)x.uptime,(int)x.outside10,(int)x.room10,(int)x.boiler10,(unsigned)x.flags,(unsigned long)x.starts,(unsigned long)x.burnerSec,(unsigned long)x.pumpSec);
+      }out.close();
+      LittleFS.remove(HISTORY_FILE);
+      LittleFS.rename("/history.tmp",HISTORY_FILE);
+      }
+    }
+  }
+}
+static String historyStatusJson(){
+  return String("{\"simulationOnly\":true,\"storage\":\"")+(historyFS?"LittleFS":"RAM")+
+    "\",\"samples\":"+String(historyCount)+",\"intervalSeconds\":300,\"burnerStarts\":"+String(burnerStarts)+
+    ",\"burnerSeconds\":"+String(burnerSeconds)+",\"pumpSeconds\":"+String(pumpSeconds)+
+    ",\"oilRate\":"+String(oilLitersPerHour,2)+",\"estimatedLiters\":"+String(burnerSeconds*oilLitersPerHour/3600.f,3)+
+",\"writeErrors\":"+String(historyWriteErrors)+"}";
+}
+static void historySendJson(){
+int hours=server.hasArg("hours")?server.arg("hours").toInt():24;
+hours=constrain(hours,1,168);
+uint32_t nowEpoch=time(nullptr)>1700000000?(uint32_t)time(nullptr):0;
+uint32_t nowUp=millis()/1000;
+server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+server.send(200,"application/json","[ ");
+bool first=true;
+  for(size_t i=0;i<historyCount;i++){
+HistorySample h=historyAt(i);
+    bool recent=(nowEpoch && h.epoch)?(nowEpoch>=h.epoch && nowEpoch-h.epoch<=(uint32_t)hours*3600):
+(nowUp>=h.uptime && nowUp-h.uptime<=(uint32_t)hours*3600);
+if(!recent)continue;
+    String item=String(first?"":",")+"{\"t\":"+String(h.epoch)+",\"u\":"+String(h.uptime)+
+      ",\"a\":"+String(h.outside10/10.f,1)+",\"r\":"+String(h.room10/10.f,1)+
+      ",\"b\":"+String(h.boiler10/10.f,1)+",\"burner\":"+String((h.flags&1)?1:0)+
+",\"pump\":"+String((h.flags&2)?1:0)+"}";
+server.sendContent(item);
+    first=false;
+  }
+server.sendContent("]");
+  server.sendContent("");
+}
+static void historyCsv(){
+server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-simulation.csv");
+server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+server.send(200,"text/csv; charset=utf-8","epoch_utc,uptime_s,aussen_C,raum_C,kessel_C,brenner_sim,pumpe_sim,starts_sim,brennersekunden_sim,pumpensekunden_sim\n");
+  for(size_t i=0;i<historyCount;i++){
+HistorySample h=historyAt(i);
+server.sendContent(String(h.epoch)+","+String(h.uptime)+","+String(h.outside10/10.f,1)+","+String(h.room10/10.f,1)+","+String(h.boiler10/10.f,1)+","+String((h.flags&1)?1:0)+","+String((h.flags&2)?1:0)+","+String(h.starts)+","+String(h.burnerSec)+","+String(h.pumpSec)+"\n");
+  }
+server.sendContent("");
+}
+
+// v0.5.4: Read-only simulation diagnostics; no automatic changes to control settings.
+static String optimizationJson(){
+  // Query parameter is deliberately restricted to the two supported periods.
+const int periodHours=(server.hasArg("hours") && server.arg("hours").toInt()==168)?168:24;
+const uint32_t periodSeconds=(uint32_t)periodHours*3600UL;
+const uint32_t now=(uint32_t)time(nullptr);
+const bool clockOk=now>1700000000UL;
+const uint32_t up=millis()/1000UL;
+uint32_t first=0,last=0,startsFirst=0,startsLast=0,burnFirst=0,burnLast=0,pumpFirst=0,pumpLast=0;
+double sumA=0,sumR=0,sumB=0;
+  size_t n=0;
+  for(size_t i=0;i<historyCount;i++){
+HistorySample h=historyAt(i);
+    bool recent=clockOk && h.epoch ? (now>=h.epoch && now-h.epoch<=periodSeconds) :
+(up>=h.uptime && up-h.uptime<=periodSeconds);
+if(!recent)continue;
+    // Counter reset or reboot means rates cannot be compared reliably.
+    if(n && (h.starts<startsLast || h.burnerSec<burnLast || h.pumpSec<pumpLast)){
+n=0;
+      sumA=sumR=sumB=0;
+    }
+if(!n){first=clockOk && h.epoch?h.epoch:h.uptime;
+    startsFirst=h.starts;
+    burnFirst=h.burnerSec;
+    pumpFirst=h.pumpSec;
+    }
+last=clockOk && h.epoch?h.epoch:h.uptime;
+startsLast=h.starts;
+    burnLast=h.burnerSec;
+    pumpLast=h.pumpSec;
+sumA+=h.outside10/10.0;
+    sumR+=h.room10/10.0;
+    sumB+=h.boiler10/10.0;
+    n++;
+  }
+uint32_t duration=n>1 && last>=first?last-first:0;
+uint32_t starts=n>1?startsLast-startsFirst:0;
+uint32_t burner=n>1?burnLast-burnFirst:0;
+uint32_t pump=n>1?pumpLast-pumpFirst:0;
+float hours=duration/3600.0f;
+float duty=duration?100.0f*burner/duration:0.0f;
+float startsPerHour=hours>=0.25f?starts/hours:0.0f;
+bool sufficient=n>=4 && duration>=900;
+String advice="Zu wenig Messdaten: mindestens vier Messpunkte und 15 Minuten benoetigt.";
+  if(sufficient){
+if(startsPerHour>6.0f)advice="Viele virtuelle Brennerstarts. Hysterese und Mindestlaufzeit pruefen; keine automatische Aenderung.";
+else if(duty>90.0f)advice="Hoher virtueller Brenneranteil. Simulation und Heizkurven-Sollwert pruefen.";
+else if(startsPerHour<1.0f)advice="Wenig virtuelle Brennerstarts im betrachteten Fenster.";
+else advice="Keine auffaellige Taktrate in den vorliegenden Simulationsdaten.";
+  }
+  String j="{\"simulationOnly\":true,\"period\":\"letzte "+String(periodHours==168?"7 Tage":"24 Stunden")+"\",\"samples\":"+String(n)+
+    ",\"requestedHours\":"+String(periodHours)+",\"windowSeconds\":"+String(duration)+",\"burnerStarts\":"+String(starts)+
+    ",\"burnerSeconds\":"+String(burner)+",\"pumpSeconds\":"+String(pump)+
+    ",\"burnerDutyPercent\":"+String(duty,1)+",\"startsPerHour\":"+String(startsPerHour,2)+
+    ",\"estimatedOilLiters\":"+String(burner*oilLitersPerHour/3600.0f,3)+
+    ",\"averageOutside\":"+String(n?sumA/n:0,1)+",\"averageRoom\":"+String(n?sumR/n:0,1)+
+    ",\"averageBoiler\":"+String(n?sumB/n:0,1)+",\"sufficientData\":"+(sufficient?"true":"false")+
+",\"advice\":\""+advice+"\"}";
+return j;
+}
+
+// Manuelle Oeltank-Buchfuehrung: keine Ableitung aus der Simulation.
+static constexpr float TANK_CAPACITY_L=4200.0f;
+float tankLiters=0.0f;
+bool tankLevelKnown=false;
+float tankLastDeliveryL=0.0f;
+uint32_t tankDeliveryCount=0;
+String tankJson(){
+  return String("{\"capacity\":4200,\"levelKnown\":")+(tankLevelKnown?"true":"false")+
+    ",\"liters\":"+String(tankLiters,1)+",\"percent\":"+String(tankLevelKnown?tankLiters*100.0f/TANK_CAPACITY_L:0,1)+
+    ",\"lastDelivery\":"+String(tankLastDeliveryL,1)+",\"deliveryCount\":"+String(tankDeliveryCount)+
+",\"source\":\"manual\",\"geometry\":\"slightly_bulged_steel\"}";
+}
+
+// Virtuelle Heizkreispumpe: KEIN GPIO und keine Netzspannungs-Schaltung.
+// Pumpenbetrieb waehrend Heizbedarf, Nachlauf nach Wegfall des Bedarfs.
+uint8_t pumpMode=0;
+// 0=Automatik, 1=Hand EIN, 2=Hand AUS
+uint16_t pumpOverrunSeconds=180;
+float summerCutoffC=18.0f, frostThresholdC=3.0f;
+bool pumpHeatRequest=false, pumpFrostRequest=false, pumpSummerLock=false;
+uint32_t lastPumpNeedMs=0;
+bool pumpHadNeed=false;
+uint32_t pumpOverrunRemaining(){
+if(!pumpHadNeed || pumpHeatRequest || pumpFrostRequest)return 0;
+uint32_t elapsed=millis()-lastPumpNeedMs;
+uint32_t duration=(uint32_t)pumpOverrunSeconds*1000UL;
+return elapsed>=duration?0:(duration-elapsed+999)/1000;
+}
+static const char* pumpReason(){
+if(!pumpDemand)return "Kein Heizbedarf";
+if(pumpMode==1)return "Handbetrieb";
+if(pumpFrostRequest)return "Frostschutz";
+if(pumpHeatRequest)return "Witterungsgefuehrter Heizbetrieb";
+if(pumpOverrunRemaining()>0)return "Pumpennachlauf";
+return "Automatik";
+}
+void updateVirtualPump(bool permitted){
+  // Fehler und Simulationsstopp: aus, auch bei Hand EIN. Keine reale Schutzfunktion.
+if(!permitted){pumpDemand=false;
+  pumpHeatRequest=false;
+  pumpFrostRequest=false;
+  return;
+  }
+pumpSummerLock=outsideTemp>=summerCutoffC;
+pumpFrostRequest=outsideTemp<=frostThresholdC || boilerTemp<=frostThresholdC;
+  // Raumtemperatur wird nicht fuer die Pumpenanforderung verwendet.
+  // Bei aktiver witterungsgefuehrter Heizung laeuft die Heizkreispumpe
+  // unabhaengig davon, ob der Brenner gerade seine Solltemperatur erreicht hat.
+  pumpHeatRequest = automatic && !pumpSummerLock;
+bool need=pumpHeatRequest || pumpFrostRequest;
+if(need){lastPumpNeedMs=millis();
+  pumpHadNeed=true;
+  }
+if(pumpMode==1){pumpDemand=true;
+  return;
+  }
+if(pumpMode==2){pumpDemand=false;
+  return;
+  }
+pumpDemand=need || (pumpHadNeed && pumpOverrunRemaining()>0);
+}
+
+static void setVirtualBurner(bool on){
+if(burnerDemand==on)return;
+burnerDemand=on;
+  lastBurnerTransitionMs=millis();
+  burnerTransitionKnown=true;
+}
+static uint32_t burnerLockRemaining(){
+if(!burnerTransitionKnown)return 0;
+uint32_t minMs=(uint32_t)(burnerDemand?minBurnerOnSeconds:minBurnerOffSeconds)*1000UL;
+uint32_t elapsed=millis()-lastBurnerTransitionMs;
+return elapsed>=minMs?0:(minMs-elapsed+999)/1000;
+}
+static void updateVirtualBurner(float setpoint, bool permitted){
+  // Freigabeentzug und Sensorausfall haben immer Vorrang vor Mindestlaufzeit.
+if(!permitted){setVirtualBurner(false);
+  return;
+  }
+  if(burnerDemand){
+if(boilerTemp>setpoint+hysteresis/2 && burnerLockRemaining()==0)setVirtualBurner(false);
+  }else{
+if(boilerTemp<setpoint-hysteresis/2 && burnerLockRemaining()==0)setVirtualBurner(true);
+  }
+}
+
+
+// ADS1115: Messung nur zu Diagnosezwecken, NICHT zur Brennerregelung.
+Adafruit_ADS1115 ads;
+bool adsReady=false;
+uint32_t adsErrorCount=0;
+uint32_t adsRecoveryCount=0;
+uint32_t adsGoodPolls=0;
+static constexpr uint8_t ADS_ADDRESS=0x48;
+struct SensorReading { float volts=NAN, ohms=NAN, temp=NAN;
+bool valid=false;
+};
+SensorReading sensor[3];
+static constexpr float DIVIDER_R=5000.0f;
+static constexpr float SENSOR_VDD=3.3f;
+static constexpr float TEMP_BETA[3]={3950.0f,3950.0f,3950.0f};
+// Nur Testkennlinien! Wolf-Fuehler noch nicht kalibriert.
+static constexpr float TEMP_R25[3]={5000.0f,5000.0f,5000.0f};
+// 5 kOhm bei 25 C (Testannahme)
+uint32_t lastSensorPoll=0;
+bool adsPing(){
+Wire.beginTransmission(ADS_ADDRESS);
+return Wire.endTransmission()==0;
+}
+void adsConfigure(){
+ads.setGain(GAIN_ONE);
+ads.setDataRate(RATE_ADS1115_128SPS);
+}
+void adsInitBus(){
+  // NACH smartdisplay_init(): Bibliotheken koennen Wire zwischenzeitlich umkonfigurieren.
+Wire.end();
+delay(5);
+Wire.begin(HEATCONTROL_I2C_SDA, HEATCONTROL_I2C_SCL);
+Wire.setClock(100000);
+Wire.setTimeOut(100);
+adsReady=ads.begin(ADS_ADDRESS,&Wire);
+if(adsReady){adsConfigure();
+  Serial.println("ADS1115: erkannt an 0x48 (nach Displayinitialisierung)");
+  }
+else Serial.println("ADS1115: nicht erreichbar, nur Simulation");
+}
+void pollSensors(){
+  // Ungueltige Werte niemals als gemessene Temperaturen ausgeben.
+for(auto &v:sensor)v=SensorReading{};
+  if(!adsPing()){
+adsErrorCount++;
+adsReady=false;
+    // Ein einzelner erneuter Initialisierungsversuch pro Messzyklus.
+adsInitBus();
+if(!adsReady || !adsPing())return;
+adsRecoveryCount++;
+  }
+  if(!adsReady){
+adsReady=ads.begin(ADS_ADDRESS,&Wire);
+if(!adsReady){adsErrorCount++;
+    return;
+    }
+adsConfigure();
+    adsRecoveryCount++;
+  }
+  for(int i=0;i<3;i++){
+    // Bei Ausfall vor jedem Kanal nicht weiter mit veralteten Daten rechnen.
+if(!adsPing()){adsErrorCount++;
+    adsReady=false;
+    return;
+    }
+int16_t raw=ads.readADC_SingleEnded(i);
+float v=ads.computeVolts(raw);
+SensorReading &r=sensor[i];
+    r.volts=v;
+    // 3.3V -- 5k Festwiderstand -- ADC -- NTC -- GND
+if(!isfinite(v)||v<0.04f||v>SENSOR_VDD-0.04f)continue;
+r.ohms=DIVIDER_R*v/(SENSOR_VDD-v);
+if(!isfinite(r.ohms)||r.ohms<100.0f||r.ohms>150000.0f)continue;
+float invT=1.0f/298.15f+logf(r.ohms/TEMP_R25[i])/TEMP_BETA[i];
+r.temp=1.0f/invT-273.15f;
+r.valid=isfinite(r.temp)&&r.ohms>=100.0f&&r.ohms<=POT_MAX_R*1.05f;
+  }
+adsGoodPolls++;
+}
+bool applyPotiTemperatures(){
+if(inputMode!=1)return false;
+float values[3];
+  for (int i = 0; i < 3; i += 2) {
+    if (!sensor[i].valid || !isfinite(sensor[i].ohms) || sensor[i].ohms < 0 || sensor[i].ohms > POT_MAX_R * 1.05f) {
+      return false;
+    }
+    values[i] = sensor[i].temp;
+  }
+  outsideTemp = values[0];
+  if (sensor[1].valid && isfinite(sensor[1].temp)) {
+    roomTemp = sensor[1].temp;  // Nur Anzeige und Aufzeichnung.
+  }
+  boilerTemp = values[2];
+return true;
+}
+String sensorJson(){
+String out="{\"connected\":"+String(adsReady?"true":"false")+",\"calibrated\":false,\"i2cErrors\":"+String(adsErrorCount)+",\"recoveries\":"+String(adsRecoveryCount)+",\"goodPolls\":"+String(adsGoodPolls)+",\"channels\":[";
+  for(int i=0;i<3;i++){
+if(i)out+=",";
+out+="{\"valid\":"+String(sensor[i].valid?"true":"false");
+out+=",\"volts\":"+(isfinite(sensor[i].volts)?String(sensor[i].volts,4):String("null"));
+out+=",\"ohms\":"+(isfinite(sensor[i].ohms)?String(sensor[i].ohms,1):String("null"));
+out+=",\"tempApprox\":"+(sensor[i].valid?String(sensor[i].temp,1):String("null"))+"}";
+  }
+return out+"]}";
+}
+bool clockNow(struct tm &t) {
+if(testClockEnabled){memset(&t,0,sizeof(t));
+  t.tm_wday=(testWeekday+1)%7;
+  t.tm_hour=testMinute/60;
+  t.tm_min=testMinute%60;
+  clockValid=true;
+  return true;
+  }
+time_t now=time(nullptr);
+if(now<1700000000){clockValid=false;
+  return false;
+  }
+localtime_r(&now,&t);
+  clockValid=true;
+  return true;
+}
+int dayIndex(const struct tm &t){return (t.tm_wday+6)%7;
+}
+int minuteNow(const struct tm &t){return t.tm_hour*60+t.tm_min;
+}
+bool inPhase(int day,int minute){
+  for(int i=0;i<3;i++){
+Phase &p=phases[day][i];
+if(p.enabled && p.from<p.to && minute>=p.from && minute<p.to)return true;
+  }
+return false;
+}
+void evaluateProgram(){
+struct tm t{};
+bool valid=clockNow(t);
+holidayActive=false;
+comfortActive=true;
+  if(!valid){
+if(scheduleEnabled || holidayEnabled)setVirtualBurner(false);
+    // Bei aktivierter Schaltuhr ohne Zeit keine automatische Brenneranforderung.
+if(scheduleEnabled || holidayEnabled)targetRoom=holidayRoom;
+else targetRoom=comfortRoom;
+return;
+  }
+  if(holidayEnabled && !testClockEnabled){
+time_t now=time(nullptr);
+holidayActive=holidayStart>0 && holidayEnd>holidayStart && now>=holidayStart && now<holidayEnd;
+  }
+if(holidayActive){targetRoom=holidayRoom;
+  comfortActive=false;
+  }
+else if(scheduleEnabled){comfortActive=inPhase(dayIndex(t),minuteNow(t));
+  targetRoom=comfortActive?comfortRoom:reducedRoom;
+  }
+else targetRoom=comfortRoom;
+}
+void saveProgram(){
+prefs.putBytes("phases",phases,sizeof(phases));
+prefs.putBool("schedule",scheduleEnabled);
+  prefs.putBool("holiday",holidayEnabled);
+prefs.putFloat("comfort",comfortRoom);
+  prefs.putFloat("reduced",reducedRoom);
+  prefs.putFloat("holidaytemp",holidayRoom);
+prefs.putLong64("holidayfrom",holidayStart);
+  prefs.putLong64("holidayto",holidayEnd);
+}
+void initProgram(){
+  for(int d=0;d<7;d++){
+phases[d][0]={360,540,true};
+    phases[d][1]={960,1320,true};
+    phases[d][2]={0,0,false};
+  }
+if(prefs.getBytesLength("phases")==sizeof(phases))prefs.getBytes("phases",phases,sizeof(phases));
+for(auto &day:phases)for(auto &p:day){if(p.from>1439||p.to>1440||p.from>=p.to){p.enabled=false;
+  p.from=0;
+  p.to=0;
+  }}
+scheduleEnabled=prefs.getBool("schedule",false);
+  holidayEnabled=prefs.getBool("holiday",false);
+comfortRoom=constrain(prefs.getFloat("comfort",21),10.f,28.f);
+reducedRoom=constrain(prefs.getFloat("reduced",17),10.f,28.f);
+holidayRoom=constrain(prefs.getFloat("holidaytemp",15),10.f,28.f);
+holidayStart=prefs.getLong64("holidayfrom",0);
+  holidayEnd=prefs.getLong64("holidayto",0);
+}
+String programJson(){
+  String out="{\"scheduleEnabled\":"+String(scheduleEnabled?"true":"false")+
+    ",\"holidayEnabled\":"+String(holidayEnabled?"true":"false")+
+    ",\"holidayActive\":"+String(holidayActive?"true":"false")+
+    ",\"clockValid\":"+String(clockValid?"true":"false")+
+    ",\"testClock\":"+String(testClockEnabled?"true":"false")+
+    ",\"comfortActive\":"+String(comfortActive?"true":"false")+
+    ",\"comfort\":"+String(comfortRoom,1)+",\"reduced\":"+String(reducedRoom,1)+
+    ",\"holidayTemp\":"+String(holidayRoom,1)+",\"holidayStart\":"+String((double)holidayStart,0)+
+",\"holidayEnd\":"+String((double)holidayEnd,0)+",\"days\":[";
+  for(int d=0;d<7;d++){
+if(d)out+=",";
+    out+="[";
+    for(int i=0;i<3;i++){
+if(i)out+=",";
+out+="["+String(phases[d][i].from)+","+String(phases[d][i].to)+","+String(phases[d][i].enabled?1:0)+"]";
+    }
+out+="]";
+  }
+out+="]}";
+  return out;
+}
+float desiredBoiler() {
+  // Vorlaeufige, begrenzte Test-Heizkurve; spaeter kalibrieren.
+float setpoint = targetRoom + slope * (targetRoom-outsideTemp);
+return constrain(setpoint, 25.0f, 75.0f);
+}
+String json() {
+  String s="{\"inputMode\":"+String(inputMode)+",\"potiReady\":"+String(inputMode==1 && sensor[0].valid && sensor[2].valid?"true":"false")+",\"outside\":"+String(outsideTemp,1)+",\"room\":"+String(roomTemp,1)+
+    ",\"boiler\":"+String(boilerTemp,1)+",\"setpoint\":"+String(desiredBoiler(),1)+
+    ",\"slope\":"+String(slope,2)+",\"targetRoom\":"+String(targetRoom,1)+
+    ",\"automatic\":"+String(automatic?"true":"false")+
+    ",\"pumpDemand\":"+String(pumpDemand?"true":"false")+
+    ",\"pumpMode\":"+String(pumpMode)+
+    ",\"pumpOverrun\":"+String(pumpOverrunSeconds)+
+    ",\"pumpReason\":\""+String(pumpReason())+"\""+
+    ",\"pumpOverrunRemaining\":"+String(pumpOverrunRemaining())+
+    ",\"summerCutoff\":"+String(summerCutoffC,1)+
+    ",\"frostThreshold\":"+String(frostThresholdC,1)+
+    ",\"pumpHeatRequest\":"+String(pumpHeatRequest?"true":"false")+
+    ",\"pumpFrostRequest\":"+String(pumpFrostRequest?"true":"false")+
+    ",\"pumpSummerLock\":"+String(pumpSummerLock?"true":"false")+
+    ",\"burnerDemand\":"+String(burnerDemand?"true":"false")+
+    ",\"simulationRunning\":"+String(simulationRunning?"true":"false")+
+    ",\"simCommandSequence\":"+String(simCommandSequence)+
+    ",\"burnerStarts\":"+String(burnerStarts)+
+    ",\"burnerSeconds\":"+String(burnerSeconds)+
+    ",\"simulationSeconds\":"+String(simulationSeconds)+
+    ",\"hysteresis\":"+String(hysteresis,1)+
+    ",\"minBurnerOn\":"+String(minBurnerOnSeconds)+
+    ",\"minBurnerOff\":"+String(minBurnerOffSeconds)+
+    ",\"burnerLockRemaining\":"+String(burnerLockRemaining())+
+    ",\"clockValid\":"+String(clockValid?"true":"false")+
+    ",\"holidayActive\":"+String(holidayActive?"true":"false")+
+    ",\"comfortActive\":"+String(comfortActive?"true":"false")+
+    ",\"oilEstimate\":"+String(burnerSeconds*oilLitersPerHour/3600.0f,2)+
+    ",\"oilRate\":"+String(oilLitersPerHour,1)+
+",\"clockText\":\""+([](){struct tm t{};if(!clockNow(t))return String("--:--");char b[24];strftime(b,sizeof(b),"%d.%m.%Y %H:%M",&t);return String(b);})()+"\"}";
+return s;
+}
+#include "WebDashboardPage.h"
+
+// 480x272 Touchdisplay: grafische Heizkurve und aktueller Betriebspunkt.
+// Nur Simulation: keinerlei Brenner-GPIO.
+static lv_obj_t *statusLabel=nullptr,*tempLabel=nullptr,*curveLabel=nullptr,*modeLabel=nullptr,*statsLabel=nullptr;
+static lv_obj_t *curveLine=nullptr,*marker=nullptr,*graphLabel=nullptr;
+static lv_obj_t *boilerLine=nullptr,*targetLine=nullptr;
+static lv_obj_t *pages[4]={};
+static int activeTab=0;
+static lv_obj_t *schedInfo=nullptr,*holidayInfo=nullptr,*overviewInfo=nullptr,*touchFeedback=nullptr;
+static lv_obj_t *scheduleFeedback=nullptr,*holidayFeedback=nullptr;
+static uint32_t feedbackUntil=0;
+static void refreshDisplay();
+static void touchAck(lv_event_t *) {
+evaluateProgram();
+feedbackUntil=millis()+2500;
+if(touchFeedback)lv_label_set_text(touchFeedback,"Eingabe uebernommen");
+if(scheduleFeedback)lv_label_set_text(scheduleFeedback,"Auswahl / Einstellung uebernommen");
+if(holidayFeedback)lv_label_set_text(holidayFeedback,"Einstellung uebernommen");
+refreshDisplay();
+}
+static void selectTab(int index){activeTab=index;
+for(int i=0;i<4;i++)if(pages[i])lv_obj_set_hidden(pages[i],i!=index);
+}
+static void tabClick(lv_event_t *e){selectTab((int)(intptr_t)lv_event_get_user_data(e));
+}
+static void nextDay(lv_event_t *e){selectedDay=(selectedDay+7+(int)(intptr_t)lv_event_get_user_data(e))%7;
+}
+static void nextPhase(lv_event_t *e){selectedPhase=(selectedPhase+3+(int)(intptr_t)lv_event_get_user_data(e))%3;
+}
+static void togglePhase(lv_event_t *){Phase &p=phases[selectedDay][selectedPhase];
+p.enabled=!p.enabled;
+if(p.from>=p.to){p.from=360;
+p.to=540;
+}saveProgram();
+}
+static void adjustPhase(lv_event_t *e){
+int code=(int)(intptr_t)lv_event_get_user_data(e);
+Phase &p=phases[selectedDay][selectedPhase];
+if(p.from>=p.to){p.from=360;
+  p.to=540;
+  }
+int delta=(abs(code)==1?-30:30);
+if(code<0)p.from=(uint16_t)constrain((int)p.from+delta,0,(int)p.to-1);
+else p.to=(uint16_t)constrain((int)p.to+delta,(int)p.from+1,1440);
+saveProgram();
+}
+static void toggleSchedule(lv_event_t *){scheduleEnabled=!scheduleEnabled;
+saveProgram();
+}
+static bool realClockAvailable(){return time(nullptr)>=1700000000;
+}
+static void initializeHolidayDates(){
+if(holidayStart>=1700000000LL && holidayEnd>holidayStart)return;
+if(!realClockAvailable())return;
+time_t now=time(nullptr);
+holidayStart=(int64_t)now;
+holidayEnd=(int64_t)now+7LL*86400LL;
+}
+static void toggleHoliday(lv_event_t *){
+  if(!holidayEnabled){
+    if(!realClockAvailable()){
+if(holidayFeedback)lv_label_set_text(holidayFeedback,"NTP-Uhr fehlt: Urlaub nicht aktivierbar");
+feedbackUntil=millis()+6000;
+return;
+    }
+initializeHolidayDates();
+    if(holidayEnd<=holidayStart){
+if(holidayFeedback)lv_label_set_text(holidayFeedback,"Zeitraum ungueltig");
+feedbackUntil=millis()+6000;
+return;
+    }
+  }
+holidayEnabled=!holidayEnabled;
+  saveProgram();
+}
+static void adjustHolidayDate(lv_event_t *e){
+  if(!realClockAvailable()){
+if(holidayFeedback)lv_label_set_text(holidayFeedback,"NTP-Uhr erforderlich");
+feedbackUntil=millis()+6000;
+return;
+  }
+initializeHolidayDates();
+int direction=(int)(intptr_t)lv_event_get_user_data(e);
+int64_t delta=86400LL*(direction<0?-1:1);
+  if(abs(direction)==1){
+int64_t candidate=holidayStart+delta;
+if(candidate>=1700000000LL && candidate<holidayEnd)holidayStart=candidate;
+  }else{
+int64_t candidate=holidayEnd+delta;
+if(candidate>holidayStart)holidayEnd=candidate;
+  }
+saveProgram();
+}
+static void adjustScheduleRoom(lv_event_t *e){
+int direction=(int)(intptr_t)lv_event_get_user_data(e);
+float &value=(abs(direction)==1)?comfortRoom:reducedRoom;
+value=roundf(constrain(value+(direction<0?-0.5f:0.5f),10.0f,28.0f)*2.0f)/2.0f;
+saveProgram();
+}
+static void adjustHolidayTemp(lv_event_t *e){holidayRoom=constrain(holidayRoom+(float)(intptr_t)lv_event_get_user_data(e)*0.5f,10.f,20.f);
+saveProgram();
+}
+
+static lv_point_precise_t boilerPoints[2], targetPoints[2];
+static lv_point_precise_t curvePoints[16];
+static constexpr int GX=42,GY=12,GW=390,GH=90;
+static float graphSetpoint(float outside) {
+return constrain(targetRoom+slope*(targetRoom-outside),25.0f,75.0f);
+}
+static int graphX(float t){return GX+(int)((t+20.0f)/45.0f*GW);
+}
+static int graphY(float t){return GY+GH-(int)((t-20.0f)/60.0f*GH);
+}
+static void adjustOutside(lv_event_t *e){
+intptr_t d=(intptr_t)lv_event_get_user_data(e);
+outsideTemp=constrain(outsideTemp+(float)d,-30.0f,45.0f);
+}
+static void adjustBoiler(lv_event_t *e){
+intptr_t d=(intptr_t)lv_event_get_user_data(e);
+boilerTemp=constrain(boilerTemp+(float)d,0.0f,110.0f);
+}
+static void adjustSlope(lv_event_t *e){
+intptr_t direction=(intptr_t)lv_event_get_user_data(e);
+slope=roundf(constrain(slope+0.1f*(float)direction,0.2f,3.0f)*10.0f)/10.0f;
+prefs.putFloat("slope",slope);
+}
+static void adjustHysteresis(lv_event_t *e){
+intptr_t d=(intptr_t)lv_event_get_user_data(e);
+hysteresis=roundf(constrain(hysteresis+0.5f*(float)d,2.0f,15.0f)*2.0f)/2.0f;
+prefs.putFloat("hyst",hysteresis);
+}
+static void toggleSimulation(lv_event_t *){simulationRunning=!simulationRunning;
+}
+static lv_obj_t* makeLabel(lv_obj_t *parent,const char *value,int x,int y){
+lv_obj_t *o=lv_label_create(parent);
+  lv_label_set_text(o,value);
+  lv_obj_set_pos(o,x,y);
+lv_obj_set_style_text_color(o,lv_color_hex(0xFFFFFF),0);
+lv_obj_set_style_text_opa(o,LV_OPA_COVER,0);
+lv_obj_set_style_text_font(o,&lv_font_montserrat_14,0);
+return o;
+}
+static void makeButton(lv_obj_t *parent,const char *label,int x,int y,int w,
+                       lv_event_cb_t callback,intptr_t arg){
+lv_obj_t *b=lv_btn_create(parent);
+  lv_obj_set_size(b,w,34);
+  lv_obj_set_pos(b,x,y);
+lv_obj_add_event_cb(b,callback,LV_EVENT_CLICKED,(void*)arg);
+lv_obj_add_event_cb(b,touchAck,LV_EVENT_CLICKED,nullptr);
+lv_obj_t *l=lv_label_create(b);
+  lv_label_set_text(l,label);
+  lv_obj_center(l);
+}
+// Touch-Kalibrierung auf Basis der bereits vom Smartdisplay-Treiber gelieferten
+// Koordinaten. Drei Punkte ergeben eine affine Korrektur (auch Achsentausch).
+// KEINE Aenderung am XPT2046-Treiber und an dessen SPI-GPIOs.
+static lv_indev_t *calIndev=nullptr;
+static lv_indev_read_cb_t originalTouchRead=nullptr;
+static bool touchCalActive=false, touchCalRequested=false, touchCalResetRequested=false;
+static int touchCalStep=0;
+static lv_point_t touchCalMeasured[3];
+static const lv_point_t touchCalTargets[3]={{48,52},{432,52},{240,222}};
+static lv_obj_t *touchCalOverlay=nullptr,*touchCalCross=nullptr,*touchCalText=nullptr;
+static bool touchCalWasDown=false;
+static uint32_t touchCalLastSample=0;
+static bool touchCalValid=false;
+static float touchAffine[6]={1,0,0,0,1,0};
+static void touchReadCalibrated(lv_indev_t *indev, lv_indev_data_t *data){
+originalTouchRead(indev,data);
+  if(data->state==LV_INDEV_STATE_PRESSED){
+const lv_point_t raw=data->point;
+    if(touchCalActive){
+      // Ein Punkt je Beruehrung, 300ms Entprellung. Keine LVGL-Objekte im Callback aendern.
+      if(!touchCalWasDown && millis()-touchCalLastSample>300 && touchCalStep<3){
+touchCalMeasured[touchCalStep]=raw;
+touchCalStep++;
+touchCalLastSample=millis();
+Serial.printf("TOUCH CAL: Punkt %d, gemessen (%d,%d)\n",touchCalStep,raw.x,raw.y);
+      }
+data->state=LV_INDEV_STATE_RELEASED;
+      // Kalibrierung darf keine UI-Tasten ausloesen
+    }else if(touchCalValid){
+float x=touchAffine[0]*raw.x+touchAffine[1]*raw.y+touchAffine[2];
+float y=touchAffine[3]*raw.x+touchAffine[4]*raw.y+touchAffine[5];
+data->point.x=(int32_t)roundf(constrain(x,0.f,479.f));
+data->point.y=(int32_t)roundf(constrain(y,0.f,271.f));
+    }
+touchCalWasDown=true;
+}else touchCalWasDown=false;
+}
+static bool solveTouchCalibration(){
+const float x0=touchCalMeasured[0].x,y0=touchCalMeasured[0].y;
+const float x1=touchCalMeasured[1].x,y1=touchCalMeasured[1].y;
+const float x2=touchCalMeasured[2].x,y2=touchCalMeasured[2].y;
+float det=x0*(y1-y2)+x1*(y2-y0)+x2*(y0-y1);
+if(fabsf(det)<1000.f)return false;
+const float xx[3]={x0,x1,x2},yy[3]={y0,y1,y2};
+float next[6];
+  for(int axis=0;axis<2;axis++){
+const float a=axis?touchCalTargets[0].y:touchCalTargets[0].x;
+const float b=axis?touchCalTargets[1].y:touchCalTargets[1].x;
+const float c=axis?touchCalTargets[2].y:touchCalTargets[2].x;
+next[axis*3+0]=(a*(yy[1]-yy[2])+b*(yy[2]-yy[0])+c*(yy[0]-yy[1]))/det;
+next[axis*3+1]=(a*(xx[2]-xx[1])+b*(xx[0]-xx[2])+c*(xx[1]-xx[0]))/det;
+next[axis*3+2]=(a*(xx[1]*yy[2]-xx[2]*yy[1])+b*(xx[2]*yy[0]-xx[0]*yy[2])+c*(xx[0]*yy[1]-xx[1]*yy[0]))/det;
+  }
+for(int i=0;i<6;i++)if(!isfinite(next[i])||fabsf(next[i])>10000.f)return false;
+memcpy(touchAffine,next,sizeof(touchAffine));
+touchCalValid=true;
+prefs.putBytes("touchMatrix",touchAffine,sizeof(touchAffine));
+Serial.println("TOUCH CAL: Kalibrierung gespeichert (NVS)");
+return true;
+}
+static void touchCalDraw(){
+if(!touchCalOverlay)return;
+  if(touchCalStep<3){
+lv_obj_set_pos(touchCalCross,touchCalTargets[touchCalStep].x-16,touchCalTargets[touchCalStep].y-16);
+lv_label_set_text_fmt(touchCalText,"Touch-Kalibrierung: Punkt %d/3",touchCalStep+1);
+  }
+}
+static void touchCalStart(){
+touchCalValid=false;
+  touchCalActive=true;
+  touchCalStep=0;
+  touchCalWasDown=false;
+touchCalLastSample=millis()-1000;
+  if(!touchCalOverlay){
+touchCalOverlay=lv_obj_create(lv_layer_top());
+lv_obj_set_size(touchCalOverlay,480,272);
+    lv_obj_set_pos(touchCalOverlay,0,0);
+lv_obj_set_style_bg_color(touchCalOverlay,lv_color_hex(0x142434),0);
+lv_obj_set_style_bg_opa(touchCalOverlay,LV_OPA_COVER,0);
+lv_obj_set_style_border_width(touchCalOverlay,0,0);
+lv_obj_set_style_radius(touchCalOverlay,0,0);
+lv_obj_set_scrollable(touchCalOverlay,false);
+touchCalText=lv_label_create(touchCalOverlay);
+lv_obj_set_style_text_color(touchCalText,lv_color_white(),0);
+lv_obj_align(touchCalText,LV_ALIGN_BOTTOM_MID,0,-10);
+touchCalCross=lv_label_create(touchCalOverlay);
+lv_label_set_text(touchCalCross,"+");
+lv_obj_set_style_text_font(touchCalCross,&lv_font_montserrat_14,0);
+lv_obj_set_style_text_color(touchCalCross,lv_color_hex(0x00FF99),0);
+  }
+lv_obj_set_hidden(touchCalOverlay,false);
+touchCalDraw();
+}
+static void touchCalService(){
+  if(touchCalResetRequested){
+touchCalResetRequested=false;
+    touchCalActive=false;
+    touchCalValid=false;
+prefs.remove("touchMatrix");
+if(touchCalOverlay)lv_obj_set_hidden(touchCalOverlay,true);
+Serial.println("TOUCH CAL: zurueckgesetzt");
+  }
+if(touchCalRequested){touchCalRequested=false;
+  touchCalStart();
+  }
+  if(touchCalActive){
+static int drawn=-1;
+if(touchCalStep!=drawn){drawn=touchCalStep;
+    touchCalDraw();
+    }
+    if(touchCalStep==3){
+bool ok=solveTouchCalibration();
+touchCalActive=false;
+if(touchCalOverlay)lv_obj_set_hidden(touchCalOverlay,true);
+Serial.println(ok?"TOUCH CAL: ERFOLG":"TOUCH CAL: Punkte ungueltig; bitte wiederholen");
+    }
+  }
+}
+static void touchCalInstall(){
+  if(prefs.getBytesLength("touchMatrix")==sizeof(touchAffine)){
+prefs.getBytes("touchMatrix",touchAffine,sizeof(touchAffine));
+    touchCalValid=true;
+  }
+  for(lv_indev_t *d=lv_indev_get_next(nullptr);d;d=lv_indev_get_next(d)){
+    if(lv_indev_get_type(d)==LV_INDEV_TYPE_POINTER){
+calIndev=d;
+      originalTouchRead=lv_indev_get_read_cb(d);
+if(originalTouchRead){lv_indev_set_read_cb(d,touchReadCalibrated);
+      Serial.println("TOUCH CAL: Eingabegeraet gefunden");
+      }
+break;
+    }
+  }
+if(!originalTouchRead)Serial.println("TOUCH CAL: Kein Pointer-Callback gefunden");
+}
+static void touchCalButton(lv_event_t *){touchCalRequested=true;
+}
+
+static void initDisplay(){
+Serial.println("DISPLAY: smartdisplay_init begin");
+smartdisplay_init();
+Serial.println("DISPLAY: smartdisplay_init done");
+smartdisplay_lcd_set_backlight(1.0f);
+touchCalInstall();
+lv_obj_t *screen=lv_scr_act();
+lv_obj_set_style_bg_color(screen,lv_color_hex(0x142434),0);
+lv_obj_set_style_text_color(screen,lv_color_hex(0xFFFFFF),0);
+const char *tabs[]={"Uebersicht","Heizkurve","Schaltuhr","Urlaub"};
+  for(int i=0;i<4;i++){
+pages[i]=lv_obj_create(screen);
+    lv_obj_set_pos(pages[i],0,32);
+    lv_obj_set_size(pages[i],480,240);
+lv_obj_set_style_bg_opa(pages[i],LV_OPA_TRANSP,0);
+    lv_obj_set_style_border_width(pages[i],0,0);
+lv_obj_set_style_pad_all(pages[i],0,0);
+    lv_obj_set_scrollbar_mode(pages[i],LV_SCROLLBAR_MODE_OFF);
+    // Jede Tab-Seite braucht ihre eigene Textfarbe (Styles werden nicht von Geschwister-Tabs geerbt).
+lv_obj_set_style_text_color(pages[i],lv_color_hex(0xFFFFFF),0);
+lv_obj_set_style_text_opa(pages[i],LV_OPA_COVER,0);
+lv_obj_set_style_text_font(pages[i],&lv_font_montserrat_14,0);
+makeButton(screen,tabs[i],i*120,0,118,tabClick,i);
+  }
+lv_obj_t *root=pages[1];
+lv_obj_set_style_bg_color(root,lv_color_hex(0x142434),0);
+lv_obj_set_style_text_color(root,lv_color_hex(0xFFFFFF),0);
+
+makeLabel(root,"75",8,7);
+  makeLabel(root,"20",8,92);
+makeLabel(root,"-20",GX,137);
+  makeLabel(root,"+25 C",GX+GW-40,137);
+  // Linie in lokalen Koordinaten; statisches Array bleibt dauerhaft gueltig.
+curveLine=lv_line_create(root);
+lv_obj_set_pos(curveLine,GX,GY);
+lv_obj_set_size(curveLine,GW,GH);
+lv_obj_set_style_line_color(curveLine,lv_color_hex(0x58C6FF),0);
+lv_obj_set_style_line_width(curveLine,3,0);
+  // Waagerechte Referenzlinien: Kessel-Ist (orange) und Soll (gruen).
+boilerLine=lv_line_create(root);
+lv_obj_set_pos(boilerLine,GX,GY);
+lv_obj_set_style_line_color(boilerLine,lv_color_hex(0xFFB84A),0);
+lv_obj_set_style_line_width(boilerLine,2,0);
+targetLine=lv_line_create(root);
+lv_obj_set_pos(targetLine,GX,GY);
+lv_obj_set_style_line_color(targetLine,lv_color_hex(0x78DD99),0);
+lv_obj_set_style_line_width(targetLine,1,0);
+marker=lv_obj_create(root);
+lv_obj_set_size(marker,11,11);
+lv_obj_set_style_radius(marker,LV_RADIUS_CIRCLE,0);
+lv_obj_set_style_bg_color(marker,lv_color_hex(0xFFB84A),0);
+lv_obj_set_style_border_width(marker,0,0);
+graphLabel=makeLabel(root,"",10,123);
+tempLabel=makeLabel(root,"",10,140);
+curveLabel=makeLabel(root,"",10,157);
+statusLabel=makeLabel(root,"",10,174);
+modeLabel=makeLabel(root,"",335,174);
+statsLabel=makeLabel(root,"",10,190);
+makeButton(root,"A -",5,206,72,adjustOutside,-1);
+makeButton(root,"A +",84,206,72,adjustOutside,1);
+makeButton(root,"K -",163,206,72,adjustBoiler,-1);
+makeButton(root,"K +",242,206,72,adjustBoiler,1);
+makeButton(root,"S -",321,206,72,adjustSlope,-1);
+makeButton(root,"S +",400,206,72,adjustSlope,1);
+makeButton(root,"Sim EIN/AUS",348,119,104,toggleSimulation,0);
+
+lv_obj_t *overview=pages[0];
+makeLabel(overview,"HEATCONTROL - SIMULATION",10,6);
+overviewInfo=makeLabel(overview,"",10,31);
+lv_obj_set_width(overviewInfo,460);
+  lv_label_set_long_mode(overviewInfo,LV_LABEL_LONG_WRAP);
+lv_obj_set_style_text_font(overviewInfo,&lv_font_montserrat_14,0);
+makeButton(overview,"Simulation umschalten",10,158,220,toggleSimulation,0);
+touchFeedback=makeLabel(overview,"Bereit",10,198);
+makeButton(overview,"Touch kalibrieren",245,158,220,touchCalButton,0);
+lv_obj_t *schedule=pages[2];
+schedInfo=makeLabel(schedule,"",8,6);
+lv_obj_set_width(schedInfo,460);
+  lv_label_set_long_mode(schedInfo,LV_LABEL_LONG_WRAP);
+makeButton(schedule,"Tag -",8,78,82,nextDay,-1);
+makeButton(schedule,"Tag +",98,78,82,nextDay,1);
+makeButton(schedule,"Phase -",188,78,90,nextPhase,-1);
+makeButton(schedule,"Phase +",286,78,90,nextPhase,1);
+makeButton(schedule,"Von -",8,122,82,adjustPhase,-1);
+makeButton(schedule,"Von +",98,122,82,adjustPhase,-2);
+makeButton(schedule,"Bis -",188,122,82,adjustPhase,1);
+makeButton(schedule,"Bis +",278,122,82,adjustPhase,2);
+makeButton(schedule,"Phase EIN/AUS",8,170,160,togglePhase,0);
+makeButton(schedule,"Plan EIN/AUS",178,170,160,toggleSchedule,0);
+makeButton(schedule,"Komf -",8,205,108,adjustScheduleRoom,-1);
+makeButton(schedule,"Komf +",128,205,108,adjustScheduleRoom,1);
+makeButton(schedule,"Absenk -",248,205,108,adjustScheduleRoom,-2);
+makeButton(schedule,"Absenk +",368,205,108,adjustScheduleRoom,2);
+scheduleFeedback=makeLabel(schedule,"Bereit",8,57);
+lv_obj_t *holiday=pages[3];
+holidayInfo=makeLabel(holiday,"",8,8);
+lv_obj_set_width(holidayInfo,460);
+  lv_label_set_long_mode(holidayInfo,LV_LABEL_LONG_WRAP);
+makeButton(holiday,"Start -1T",8,108,110,adjustHolidayDate,-1);
+makeButton(holiday,"Start +1T",128,108,110,adjustHolidayDate,1);
+makeButton(holiday,"Ende -1T",248,108,110,adjustHolidayDate,-2);
+makeButton(holiday,"Ende +1T",368,108,110,adjustHolidayDate,2);
+makeButton(holiday,"Urlaub EIN/AUS",8,152,170,toggleHoliday,0);
+makeButton(holiday,"Temp -",188,152,110,adjustHolidayTemp,-1);
+makeButton(holiday,"Temp +",308,152,110,adjustHolidayTemp,1);
+holidayFeedback=makeLabel(holiday,"Bereit",8,201);
+selectTab(0);
+Serial.println("DISPLAY: LVGL objects created");
+}
+static void refreshDisplay(){
+if(!tempLabel)return;
+char buffer[256];
+  for(int i=0;i<16;i++){
+float a=-20.0f+i*3.0f;
+curvePoints[i].x=(int)((a+20.0f)/45.0f*GW);
+curvePoints[i].y=graphY(graphSetpoint(a))-GY;
+  }
+lv_line_set_points(curveLine,curvePoints,16);
+int by=constrain(graphY(boilerTemp)-GY,0,GH);
+int ty=constrain(graphY(desiredBoiler())-GY,0,GH);
+boilerPoints[0]={0,(decltype(boilerPoints[0].y))by};
+  boilerPoints[1]={(decltype(boilerPoints[0].x))GW,(decltype(boilerPoints[0].y))by};
+targetPoints[0]={0,(decltype(targetPoints[0].y))ty};
+  targetPoints[1]={(decltype(targetPoints[0].x))GW,(decltype(targetPoints[0].y))ty};
+lv_line_set_points(boilerLine,boilerPoints,2);
+lv_line_set_points(targetLine,targetPoints,2);
+lv_obj_set_pos(marker,graphX(outsideTemp)-5,graphY(desiredBoiler())-5);
+snprintf(buffer,sizeof(buffer),"Aussen %.1f C  ->  Soll %.1f C",outsideTemp,desiredBoiler());
+lv_label_set_text(graphLabel,buffer);
+snprintf(buffer,sizeof(buffer),"Raum %.1f C    Kessel IST %.1f C",roomTemp,boilerTemp);
+lv_label_set_text(tempLabel,buffer);
+  snprintf(buffer,sizeof(buffer),"Steilheit %.1f   Schaltschwellen %.1f / %.1f C",
+slope,desiredBoiler()-hysteresis/2,desiredBoiler()+hysteresis/2);
+lv_label_set_text(curveLabel,buffer);
+snprintf(buffer,sizeof(buffer),"Brenner: %s   Pumpe: %s",burnerDemand?"EIN":"AUS",pumpDemand?"EIN":"AUS");
+lv_label_set_text(statusLabel,buffer);
+lv_label_set_text(modeLabel,simulationRunning?"SIM LAEUFT":"SIM PAUSE");
+  snprintf(buffer,sizeof(buffer),"Starts %lu  Laufzeit %lu:%02lu  Simulation %lu:%02lu",
+           (unsigned long)burnerStarts,
+           (unsigned long)(burnerSeconds/60),(unsigned long)(burnerSeconds%60),
+(unsigned long)(simulationSeconds/60),(unsigned long)(simulationSeconds%60));
+lv_label_set_text(statsLabel,buffer);
+  if(overviewInfo){
+struct tm t{};
+    bool valid=clockNow(t);
+    char stamp[32]="--:--";
+if(valid)strftime(stamp,sizeof(stamp),"%d.%m.%Y %H:%M",&t);
+    snprintf(buffer,sizeof(buffer),"Uhrzeit: %s%s\nSimulation: %s  Brenner: %s\nUrlaub: %s  Schaltuhr: %s\nStarts: %lu  Laufzeit: %.2f h\nOel geschaetzt: %.2f L (%.1f L/h)\nKessel: %.1f C  Soll: %.1f C",
+      stamp,valid?"":" (ungueltig)",simulationRunning?"LAEUFT":"PAUSE",burnerDemand?"EIN":"AUS",
+      holidayActive?"AKTIV":"AUS",scheduleEnabled?"EIN":"AUS",
+      (unsigned long)burnerStarts,burnerSeconds/3600.0f,
+burnerSeconds*oilLitersPerHour/3600.0f,oilLitersPerHour,boilerTemp,desiredBoiler());
+lv_label_set_text(overviewInfo,buffer);
+    if(feedbackUntil && (int32_t)(millis()-feedbackUntil)>=0){
+if(touchFeedback)lv_label_set_text(touchFeedback,"Bereit");
+if(scheduleFeedback)lv_label_set_text(scheduleFeedback,"Bereit");
+if(holidayFeedback)lv_label_set_text(holidayFeedback,"Bereit");
+feedbackUntil=0;
+    }
+  }
+  if(schedInfo){
+Phase &p=phases[selectedDay][selectedPhase];
+    snprintf(buffer,sizeof(buffer),"SCHALTUHR: %s  Zeit: %s\nTag %d  Phase %d: %02d:%02d - %02d:%02d  %s\nKomfort %.1f C  Absenk %.1f C",
+      scheduleEnabled?"EIN":"AUS",clockValid?"OK":"FEHLT",selectedDay+1,selectedPhase+1,
+p.from/60,p.from%60,p.to/60,p.to%60,p.enabled?"EIN":"AUS",comfortRoom,reducedRoom);
+lv_label_set_text(schedInfo,buffer);
+  }
+  if(holidayInfo){
+char from[24]="nicht gesetzt",to[24]="nicht gesetzt";
+if(holidayStart>=1700000000LL){time_t t=(time_t)holidayStart;
+    struct tm local{};
+    localtime_r(&t,&local);
+    strftime(from,sizeof(from),"%d.%m.%y %H:%M",&local);
+    }
+if(holidayEnd>=1700000000LL){time_t t=(time_t)holidayEnd;
+    struct tm local{};
+    localtime_r(&t,&local);
+    strftime(to,sizeof(to),"%d.%m.%y %H:%M",&local);
+    }
+    snprintf(buffer,sizeof(buffer),"URLAUB %s / %s   %.1f C\nBeginn: %s\nRueckkehr: %s\nNTP: %s  (Tasten: +/- 1 Tag)",
+holidayEnabled?"EIN":"AUS",holidayActive?"AKTIV":"INAKTIV",holidayRoom,from,to,realClockAvailable()?"OK":"FEHLT");
+lv_label_set_text(holidayInfo,buffer);
+  }
+}
+
+// HeatControl v0.5.5: PCF8574 auf dem bereits initialisierten ADS1115-I2C-Bus.
+// KEINE Relais-GPIOs am ESP32! XPT2046-Touch bleibt unberuehrt.
+// PCF8574 (ohne A-Suffix): A0=A1=A2=GND -> 0x20. P0=Brenner, P1=Pumpe.
+// PCF8574-Ausgaenge sind quasi-bidirektional; HIGH ist nur schwach getrieben.
+// Nur fuer galvanisch getrennten Niedervolt-Pruefstand, keine reale Heizung.
+#ifndef HEATCONTROL_PCF8574_ADDRESS
+#define HEATCONTROL_PCF8574_ADDRESS 0x20
+#endif
+#ifndef HEATCONTROL_PCF8574_OUTPUTS_ENABLED
+#define HEATCONTROL_PCF8574_OUTPUTS_ENABLED 0
+#endif
+static constexpr uint8_t PCF_OFF=0xFF;
+// Alle acht Pins HIGH (quasi-bidirektional)
+static bool pcfPresent=false;
+static bool pcfOutputHealthy=false;
+static uint8_t pcfRequested=PCF_OFF;
+static uint8_t pcfLastWritten=PCF_OFF;
+static uint32_t pcfLastProbe=0, pcfLastWrite=0;
+static uint32_t pcfErrors=0, pcfSuccess=0;
+// Ausschliesslich kurzzeitige manuelle Niedervolt-Tests. Keine Automatik-Freigabe.
+static uint8_t relayTestPin=255;
+static uint32_t relayTestUntil=0;
+static bool relayTestActive=false;
+// Zeitlich begrenzte Automatik ausschliesslich fuer den getrennten Niedervolt-Pruefstand.
+static bool relayBenchAuto=false;
+// Beim Start nach erfolgreicher PCF-Initialisierung automatisch freigeben (nur Niedervolt-Pruefstand).
+static void relayBenchStop(const char *reason){
+if(relayBenchAuto){relayBenchAuto=false;
+  eventLog("RELAIS",String("Pruefstand-Automatik AUS: ")+reason);
+  }
+}
+
+static void relayTestStop(const char *reason);
+static char relayCommand[32];
+static size_t relayCommandLen=0;
+static bool pcfWrite(uint8_t data){
+Wire.beginTransmission(HEATCONTROL_PCF8574_ADDRESS);
+Wire.write(data);
+uint8_t error=Wire.endTransmission();
+if(error){pcfErrors++;
+  pcfPresent=false;
+  pcfOutputHealthy=false;
+  return false;
+  }
+pcfPresent=true;
+  pcfOutputHealthy=true;
+  pcfLastWritten=data;
+  pcfLastWrite=millis();
+  pcfSuccess++;
+return true;
+}
+static void relayTestStop(const char *reason){
+  if(relayTestActive){
+relayTestActive=false;
+    relayTestPin=255;
+    relayTestUntil=0;
+eventLog("RELAIS",String("Test beendet: ")+reason);
+  }
+pcfRequested=PCF_OFF;
+if(pcfPresent)pcfWrite(PCF_OFF);
+}
+static bool relayTestStart(uint8_t pin){
+if(pin>1 || !pcfPresent || !pcfOutputHealthy || relayOtaInProgress)return false;
+relayBenchStop("Einzeltest");
+relayTestStop("Neuer Test");
+relayTestPin=pin;
+relayTestUntil=millis()+2000;
+relayTestActive=true;
+uint8_t value=(uint8_t)(PCF_OFF & ~(1u<<pin));
+pcfRequested=value;
+  if(!pcfWrite(value)){
+relayTestActive=false;
+    relayTestPin=255;
+    relayTestUntil=0;
+eventLog("FEHLER","PCF8574: Testausgang konnte nicht gesetzt werden");
+return false;
+  }
+eventLog("RELAIS",String("Niedervolt-Test P")+String(pin)+" gestartet (max. 2 s)");
+return true;
+}
+static void relayOff(){
+relayBenchStop("Not-Aus / OTA");
+  // Ein Schreibversuch ist nur sinnvoll, wenn das Modul zuvor erkannt wurde.
+relayTestStop("Relais AUS");
+}
+static void relayInit(){
+  // Aufruf NACH initDisplay() und adsInitBus(). PCF kann noch nicht angesteckt sein.
+Serial.printf("PCF8574: Suche auf I2C 0x%02X (ADS1115: 0x48)\n",HEATCONTROL_PCF8574_ADDRESS);
+pcfLastProbe=millis();
+Wire.beginTransmission(HEATCONTROL_PCF8574_ADDRESS);
+if(Wire.endTransmission()!=0){Serial.println("PCF8574: noch nicht angeschlossen; Touch/ADS bleiben aktiv");
+  return;
+  }
+pcfPresent=true;
+  if(pcfWrite(PCF_OFF)){
+relayBenchAuto=true;
+eventLog("RELAIS","Niedervolt-Pruefstand: Ausgaenge nach Initialisierung dauerhaft freigegeben");
+Serial.println("PCF8574: erkannt; Pruefstand-Ausgaenge automatisch freigegeben (aktuell AUS)");
+  }
+}
+static void relayUpdate(){
+const uint32_t now=millis();
+  if(relayBenchAuto && (relayOtaInProgress || !pcfPresent || !pcfOutputHealthy)){
+relayBenchStop("I2C / OTA");
+  }
+  if(relayTestActive){
+    if(relayOtaInProgress || (int32_t)(now-relayTestUntil)>=0 || !pcfPresent){
+relayTestStop("Zeit abgelaufen / OTA / I2C-Verlust");
+}else return;
+  }
+  if(!pcfPresent){
+relayBenchStop("PCF8574 nicht erreichbar");
+if(now-pcfLastProbe<5000)return;
+pcfLastProbe=now;
+Wire.beginTransmission(HEATCONTROL_PCF8574_ADDRESS);
+if(Wire.endTransmission()!=0)return;
+pcfPresent=true;
+if(!pcfWrite(PCF_OFF))return;
+relayBenchAuto=true;
+eventLog("RELAIS","Niedervolt-Pruefstand: Ausgaenge nach I2C-Wiedererkennung freigegeben");
+Serial.println("PCF8574: nachtraeglich erkannt, Pruefstand-Ausgaenge freigegeben");
+  }
+uint8_t wanted=PCF_OFF;
+  if(relayBenchAuto && !relayOtaInProgress && simulationRunning && automatic && pcfOutputHealthy){
+if(burnerDemand)wanted &= (uint8_t)~0x01;
+if(pumpDemand)wanted &= (uint8_t)~0x02;
+  }
+pcfRequested=wanted;
+  if(wanted!=pcfLastWritten || now-pcfLastWrite>=1000){
+const uint8_t previous=pcfLastWritten;
+    if(!pcfWrite(wanted)){
+relayBenchStop("I2C-Schreibfehler");
+Serial.println("PCF8574: I2C-Fehler, Ausgangszustand unbekannt!");
+eventLog("FEHLER","PCF8574 I2C-Schreibfehler: Ausgangszustand unbekannt");
+    }else if((previous^wanted)&0x03){
+eventLog("RELAIS",String("P0=")+((wanted&1)?"AUS":"EIN")+", P1="+((wanted&2)?"AUS":"EIN")+" (Niedervolt-Pruefstand)");
+    }
+  }
+}
+static bool relayBenchStart(){
+if(!pcfPresent || !pcfOutputHealthy || relayOtaInProgress || !simulationRunning || !automatic || relayTestActive)return false;
+relayBenchAuto=true;
+eventLog("RELAIS","Pruefstand-Automatik dauerhaft aktiviert (bis AUS/Neustart/Fehler)");
+relayUpdate();
+return true;
+}
+static String relayDiagnosticJson(){
+  return String("{\"version\":\"0.5.9\",\"type\":\"PCF8574\",\"address\":\"")+String(HEATCONTROL_PCF8574_ADDRESS,HEX)+
+    "\",\"present\":"+(pcfPresent?"true":"false")+
+    ",\"initialized\":"+(pcfOutputHealthy?"true":"false")+
+    ",\"outputsEnabled\":"+(relayBenchAuto?"true":"false")+
+    ",\"benchAuto\":"+(relayBenchAuto?"true":"false")+
+    ",\"benchRemainingSeconds\":"+String(relayBenchAuto?-1:0)+
+    ",\"testActive\":"+(relayTestActive?"true":"false")+
+    ",\"testPin\":"+String(relayTestActive?relayTestPin:-1)+
+    ",\"testRemainingMs\":"+String(relayTestActive?(uint32_t)max(0L,(long)(relayTestUntil-millis())):0)+
+    ",\"burnerDemand\":"+(burnerDemand?"true":"false")+
+    ",\"pumpDemand\":"+(pumpDemand?"true":"false")+
+    ",\"burnerRelay\":"+((pcfOutputHealthy && !(pcfLastWritten&0x01))?"true":"false")+
+    ",\"pumpRelay\":"+((pcfOutputHealthy && !(pcfLastWritten&0x02))?"true":"false")+
+    ",\"lastWritten\":"+String(pcfLastWritten)+
+    ",\"errors\":"+String(pcfErrors)+
+",\"success\":"+String(pcfSuccess)+"}";
+}
+static void relaySerial(){
+  while(Serial.available()){
+char c=(char)Serial.read();
+    if(c=='\r'||c=='\n'){
+if(!relayCommandLen)continue;
+relayCommand[relayCommandLen]=0;
+String cmd(relayCommand);
+      cmd.trim();
+      cmd.toUpperCase();
+      relayCommandLen=0;
+if(cmd=="RELAY STATUS")Serial.println(relayDiagnosticJson());
+else if(cmd=="RELAY OFF"){relayOff();
+      Serial.println("PCF8574: AUS angefordert; Automatik ggf. im naechsten Zyklus aktiv");
+      }
+else Serial.println("Befehle: RELAY STATUS, RELAY OFF");
+}else if(relayCommandLen<sizeof(relayCommand)-1)relayCommand[relayCommandLen++]=c;
+else relayCommandLen=0;
+  }
+}
+void setup(){
+Serial.begin(115200);
+ delay(300);
+ Serial.println("HeatControl v0.5.9 – SIMULATION / RELAIS-PRUEFSTAND");
+prefs.begin("heatcontrol",false);
+tankLevelKnown=prefs.getBool("tankKnown",false);
+tankLiters=constrain(prefs.getFloat("tankLiters",0),0.0f,TANK_CAPACITY_L);
+tankLastDeliveryL=prefs.getFloat("tankLast",0);
+tankDeliveryCount=prefs.getUInt("tankCount",0);
+oilLitersPerHour=constrain(prefs.getFloat("oilRate",2.0f),0.1f,20.f);
+historyInit();
+eventLog("SYSTEM","Neustart; PCF8574 wird initialisiert; Niedervolt-Pruefstand");
+initProgram();
+ inputMode=constrain((int)prefs.getUChar("inputMode",0),0,1);
+setenv("TZ",tzRule,1);
+ tzset();
+slope=constrain(prefs.getFloat("slope",1.2f),0.2f,3.f);
+ targetRoom=prefs.getFloat("roomset",21);
+ hysteresis=constrain(prefs.getFloat("hyst",5.f),2.f,15.f);
+ minBurnerOnSeconds=constrain((int)prefs.getUInt("minOn",30),0,600);
+ minBurnerOffSeconds=constrain((int)prefs.getUInt("minOff",20),0,600);
+ pumpMode=constrain((int)prefs.getUChar("pumpMode",0),0,2);
+ pumpOverrunSeconds=constrain((int)prefs.getUInt("pumpRun",180),0,1800);
+ summerCutoffC=constrain(prefs.getFloat("pumpSummer",18.f),10.f,30.f);
+ frostThresholdC=constrain(prefs.getFloat("pumpFrost",3.f),-10.f,10.f);
+WiFi.mode(WIFI_AP_STA);
+ WiFi.softAP("HeatControl-Test");
+String ssid=prefs.getString("ssid","");
+ if(ssid.length()){
+WiFi.begin(ssid.c_str(),prefs.getString("wifiPass","").c_str());
+configTzTime(tzRule,"pool.ntp.org","time.google.com");
+ }
+Serial.print("Test-WLAN HeatControl-Test, Browser: http://");
+ Serial.println(WiFi.softAPIP());
+server.on("/",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send_P(200,"text/html; charset=utf-8",PAGE);});
+server.on("/api/sensors",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",sensorJson());});
+server.on("/api/status",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",json());});
+server.on("/api/optimization",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",optimizationJson());});
+server.on("/api/events",HTTP_GET,[]{eventSendJson();});
+server.on("/api/events.csv",HTTP_GET,[]{eventSendCsv();});
+server.on("/api/history/status",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",historyStatusJson());});
+server.on("/api/history",HTTP_GET,[]{historySendJson();});
+server.on("/api/history.csv",HTTP_GET,[]{historyCsv();});
+ server.on("/api/oilrate",HTTP_POST,[]{
+if(!server.hasArg("rate")){server.send(400,"text/plain","rate fehlt");
+   return;
+   }
+float v=server.arg("rate").toFloat();
+   if(!isfinite(v)||v<0.1f||v>20.f){server.send(400,"text/plain","Ungueltiger Durchsatz");
+   return;
+   }
+oilLitersPerHour=v;
+   prefs.putFloat("oilRate",v);
+   server.send(200,"application/json",historyStatusJson());
+});
+server.on("/api/tank",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",tankJson());});
+ server.on("/api/tank",HTTP_POST,[]{
+String action=server.arg("action"),value=server.arg("liters");
+   value.trim();
+if(!value.length()){server.send(400,"text/plain","Literwert fehlt");
+   return;
+   }
+char *end=nullptr;
+   float liters=strtof(value.c_str(),&end);
+if(end==value.c_str() || *end!='\0' || !isfinite(liters)) {server.send(400,"text/plain","Ungueltiger Literwert");
+   return;
+   }
+   if(action=="set"){
+if(liters<0 || liters>TANK_CAPACITY_L){server.send(400,"text/plain","Bestand muss zwischen 0 und 4200 Litern liegen");
+     return;
+     }
+tankLiters=liters;
+     tankLevelKnown=true;
+   }else if(action=="delivery"){
+if(!tankLevelKnown){server.send(409,"text/plain","Bitte zuerst Anfangsbestand speichern");
+     return;
+     }
+if(liters<=0 || liters>TANK_CAPACITY_L || tankLiters+liters>TANK_CAPACITY_L){server.send(400,"text/plain","Liefermenge ungueltig oder Tankkapazitaet ueberschritten");
+     return;
+     }
+tankLiters+=liters;
+     tankLastDeliveryL=liters;
+     tankDeliveryCount++;
+prefs.putFloat("tankLast",tankLastDeliveryL);
+     prefs.putUInt("tankCount",tankDeliveryCount);
+}else{server.send(400,"text/plain","Unbekannte Aktion");
+   return;
+   }
+prefs.putFloat("tankLiters",tankLiters);
+   prefs.putBool("tankKnown",tankLevelKnown);
+server.send(200,"application/json",tankJson());
+});
+ server.on("/touch/calibrate",HTTP_GET,[]{
+server.send(200,"text/html; charset=utf-8",R"HTML(<!doctype html><html lang="de"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Touch-Kalibrierung</title><body style="font:18px sans-serif;max-width:650px;margin:30px auto;padding:15px"><h2>HeatControl v0.5.9 – Touch</h2><p>PCF8574-Relaisausgaenge sind am Niedervolt-Pruefstand automatisch freigegeben. Nach Start drei Fadenkreuze auf dem Display antippen. Jeder Punkt erfordert ein neues Antippen.</p><form action="/api/touch/start" method="post"><button style="padding:15px">Kalibrierung starten</button></form><p>Wenn die Bedienung schlechter wird:</p><form action="/api/touch/reset" method="post"><button style="padding:15px">Kalibrierung zuruecksetzen</button></form><p><a href="/">Zurueck zu HeatControl</a></p></body></html>)HTML");
+});
+server.on("/api/touch/start",HTTP_POST,[]{touchCalRequested=true;server.sendHeader("Location","/touch/calibrate");server.send(303,"text/plain","Kalibrierung gestartet");});
+server.on("/api/touch/reset",HTTP_POST,[]{touchCalResetRequested=true;server.sendHeader("Location","/touch/calibrate");server.send(303,"text/plain","Kalibrierung zurueckgesetzt");});
+server.on("/api/relay",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",relayDiagnosticJson());});
+ server.on("/api/relay/test",HTTP_POST,[]{
+   // Achtung: NUR Niedervolt-Testaufbau. Kein echter Brenner angeschlossen!
+   if(!server.hasArg("pin") || (server.arg("pin")!="0" && server.arg("pin")!="1")){
+server.send(400,"text/plain","pin=0 oder pin=1 erforderlich");
+     return;
+   }
+   if(!relayTestStart((uint8_t)server.arg("pin").toInt())){
+server.send(503,"text/plain","PCF8574 nicht bereit");
+     return;
+   }
+server.send(200,"application/json",relayDiagnosticJson());
+});
+server.on("/api/relay/off",HTTP_POST,[]{relayBenchStop("Manuell AUS");relayTestStop("Manuell AUS");server.send(200,"application/json",relayDiagnosticJson());});
+ server.on("/api/relay/bench/start",HTTP_POST,[]{
+if(!relayBenchStart()){server.send(409,"text/plain","Nur bei laufender Simulation, Automatik und erkanntem PCF8574 moeglich");
+   return;
+   }
+server.send(200,"application/json",relayDiagnosticJson());
+});
+ server.on("/relay/test",HTTP_GET,[]{
+server.send(200,"text/html; charset=utf-8",R"PAGE(<!doctype html><html lang="de"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HeatControl Relaispruefstand</title><style>body{background:#142131;color:#f0f3f8;font:18px system-ui;max-width:720px;margin:35px auto;padding:16px}button{padding:15px;margin:6px;background:#284766;color:white;border:1px solid #7792aa;border-radius:8px}pre{white-space:pre-wrap;background:#24354b;padding:14px;border-radius:8px}</style><h2>HeatControl v0.5.9 – PCF8574 Niedervolt-Pruefstand</h2><p>Nur fuer getrennten Niedervolt-Testaufbau. Keine Verbindung zur Heizung oder Netzspannung! Jeder Test dauert hoechstens zwei Sekunden. P0 und P1 schalten aktiv LOW.</p><button onclick="pulse(0)">P0 – 2 Sekunden</button><button onclick="pulse(1)">P1 – 2 Sekunden</button><button onclick="off()">Sofort AUS</button><p><button onclick="bench()">Pruefstand-Automatik dauerhaft EIN</button></p><p>Nur bei laufender Simulation und aktivierter Automatik. Nach jedem Neustart automatisch freigegeben; ohne Simulation bleiben P0/P1 AUS. Manuelles AUS bis zum naechsten Neustart.</p><pre id="diag">Lade...</pre><a style="color:#a9d5ff" href="/">Zurueck</a><script>async function post(url,body){try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});if(!r.ok)alert(await r.text());}catch(e){alert(e.message)}refresh()}async function pulse(n){await post('/api/relay/test','pin='+n)}async function off(){await post('/api/relay/off','')}async function bench(){await post('/api/relay/bench/start','')}async function refresh(){try{document.getElementById('diag').textContent=JSON.stringify(await(await fetch('/api/relay',{cache:'no-store'})).json(),null,2)}catch(e){document.getElementById('diag').textContent=e.message}}refresh();setInterval(refresh,600)</script></html>)PAGE");
+});
+ server.on("/api/inputmode",HTTP_POST,[]{
+int mode=server.arg("mode").toInt();
+if(mode!=0 && mode!=1){server.send(400,"text/plain","Unbekannte Betriebsart");
+   return;
+   }
+inputMode=(uint8_t)mode;
+   simulationRunning=false;
+   setVirtualBurner(false);
+prefs.putUChar("inputMode",inputMode);
+server.send(200,"application/json",json());
+});
+ server.on("/api/pump",HTTP_POST,[]{
+if(server.hasArg("pumpMode"))pumpMode=constrain(server.arg("pumpMode").toInt(),0,2);
+if(server.hasArg("pumpOverrun"))pumpOverrunSeconds=constrain(server.arg("pumpOverrun").toInt(),0,1800);
+if(server.hasArg("summerCutoff"))summerCutoffC=constrain(server.arg("summerCutoff").toFloat(),10.f,30.f);
+if(server.hasArg("frostThreshold"))frostThresholdC=constrain(server.arg("frostThreshold").toFloat(),-10.f,10.f);
+prefs.putUChar("pumpMode",pumpMode);
+   prefs.putUInt("pumpRun",pumpOverrunSeconds);
+prefs.putFloat("pumpSummer",summerCutoffC);
+   prefs.putFloat("pumpFrost",frostThresholdC);
+server.send(200,"application/json",json());
+});
+ server.on("/api/config",HTTP_POST,[]{
+if(server.hasArg("outside"))outsideTemp=constrain(server.arg("outside").toFloat(),-30.f,45.f);
+if(server.hasArg("room"))roomTemp=constrain(server.arg("room").toFloat(),0.f,45.f);
+if(server.hasArg("boiler"))boilerTemp=constrain(server.arg("boiler").toFloat(),0.f,110.f);
+if(server.hasArg("slope"))slope=constrain(server.arg("slope").toFloat(),0.2f,3.f);
+if(server.hasArg("hysteresis"))hysteresis=constrain(server.arg("hysteresis").toFloat(),2.f,15.f);
+if(server.hasArg("minBurnerOn"))minBurnerOnSeconds=constrain(server.arg("minBurnerOn").toInt(),0,600);
+if(server.hasArg("minBurnerOff"))minBurnerOffSeconds=constrain(server.arg("minBurnerOff").toInt(),0,600);
+if(server.hasArg("targetRoom")){comfortRoom=constrain(server.arg("targetRoom").toFloat(),10.f,28.f);
+   prefs.putFloat("comfort",comfortRoom);
+   }
+automatic=server.arg("automatic")=="1";
+prefs.putFloat("slope",slope);
+   prefs.putFloat("hyst",hysteresis);
+   prefs.putUInt("minOn",minBurnerOnSeconds);
+   prefs.putUInt("minOff",minBurnerOffSeconds);
+server.send(200,"application/json",json());
+});
+ server.on("/api/sim",HTTP_POST,[]{
+String cmd=server.arg("cmd");
+if(cmd=="start")simulationRunning=true;
+else if(cmd=="pause"){simulationRunning=false;
+   setVirtualBurner(false);
+   }
+else if(cmd=="toggle"){simulationRunning=!simulationRunning;
+   if(!simulationRunning)setVirtualBurner(false);
+   }
+   else if(cmd=="reset"){
+simulationRunning=false;
+     setVirtualBurner(false);
+     burnerStarts=0;
+     burnerSeconds=0;
+     simulationSeconds=0;
+outsideTemp=5;
+     roomTemp=20;
+     boilerTemp=42;
+   }
+else {server.send(400,"text/plain","Unbekannter Simulationsbefehl");
+   return;
+   }
+simCommandSequence++;
+Serial.printf("WEB SIM: cmd=%s, running=%d, sequence=%lu\n",cmd.c_str(),simulationRunning,(unsigned long)simCommandSequence);
+server.sendHeader("Cache-Control","no-store");
+server.send(200,"application/json",json());
+});
+server.on("/api/program",HTTP_GET,[]{server.send(200,"application/json",programJson());});
+ server.on("/api/program",HTTP_POST,[]{
+if(!server.hasArg("days")){server.send(400,"text/plain","days fehlt");
+   return;
+   }
+   // Kompaktes JSON-Array: exakt 7 Tage x 3 Phasen x 3 Integer, keine externen Parser.
+String raw=server.arg("days");
+   int values[63],n=0;
+   int pos=0;
+   while(pos<(int)raw.length() && n<63){
+     if(raw[pos]=='-' || isdigit((unsigned char)raw[pos])){
+int next=pos+1;
+       while(next<(int)raw.length()&&isdigit((unsigned char)raw[next]))next++;
+values[n++]=raw.substring(pos,next).toInt();
+       pos=next;
+}else if(raw[pos]=='['||raw[pos]==']'||raw[pos]==','||isspace((unsigned char)raw[pos]))pos++;
+else{server.send(400,"text/plain","ungueltiges JSON");
+     return;
+     }
+   }
+if(n!=63){server.send(400,"text/plain","erwartet 63 Werte");
+   return;
+   }
+Phase next[7][3];
+   int k=0;
+   for(int d=0;d<7;d++)for(int i=0;i<3;i++){
+int a=values[k++],b=values[k++],en=values[k++];
+     if(a<0||a>1439||b<0||b>1440||(en&&a>=b)||(en!=0&&en!=1)){
+server.send(400,"text/plain","ungueltige Phase");
+       return;
+     }
+next[d][i]={(uint16_t)a,(uint16_t)b,en==1};
+   }
+memcpy(phases,next,sizeof(phases));
+scheduleEnabled=server.arg("enabled")=="1";
+comfortRoom=constrain(server.arg("comfort").toFloat(),10.f,28.f);
+reducedRoom=constrain(server.arg("reduced").toFloat(),10.f,28.f);
+saveProgram();
+   server.send(200,"application/json",programJson());
+});
+ server.on("/api/holiday",HTTP_POST,[]{
+int64_t a=atoll(server.arg("start").c_str()),b=atoll(server.arg("end").c_str());
+bool enabled=server.arg("enabled")=="1";
+if(enabled && (a<1700000000LL||b<=a)){server.send(400,"text/plain","ungueltiger Zeitraum");
+   return;
+   }
+holidayStart=a;
+   holidayEnd=b;
+   holidayEnabled=enabled;
+holidayRoom=constrain(server.arg("temp").toFloat(),10.f,20.f);
+saveProgram();
+   server.send(200,"application/json",programJson());
+});
+ server.on("/api/wifi",HTTP_POST,[]{
+String ssid=server.arg("ssid");
+   if(ssid.length()>32){server.send(400,"text/plain","SSID zu lang");
+   return;
+   }
+prefs.putString("ssid",ssid);
+if(server.arg("password").length())prefs.putString("wifiPass",server.arg("password"));
+server.send(200,"text/plain","gespeichert; bitte neu starten");
+});
+ server.on("/api/testclock",HTTP_POST,[]{
+testClockEnabled=server.arg("enabled")=="1";
+testWeekday=constrain(server.arg("day").toInt(),0,6);
+testMinute=constrain(server.arg("minute").toInt(),0,1439);
+server.send(200,"application/json",programJson());
+});
+server.begin();
+initDisplay();
+refreshDisplay();
+Serial.println("DISPLAY: setup complete");
+adsInitBus();
+ // Wichtig: Display vor I2C-Sensorinitialisierung
+pollSensors();
+ applyPotiTemperatures();
+relayInit();
+ // PCF8574 erst NACH Display und ADS1115 am gemeinsamen I2C-Bus suchen
+}
+void loop(){
+relaySerial();
+relayUpdate();
+server.handleClient();
+maintainOTA();
+if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
+ pollSensors();
+ if(inputMode==1 && !applyPotiTemperatures()){simulationRunning=false;
+ setVirtualBurner(false);
+ }}
+static uint32_t prevTick=millis();
+uint32_t now=millis();
+lv_tick_inc(now-prevTick);
+ prevTick=now;
+lv_timer_handler();
+touchCalService();
+if(millis()-lastTick>=1000){lastTick=millis();
+ evaluateProgram();
+ float set=desiredBoiler();
+bool previousDemand=burnerDemand;
+   bool permitted=automatic && simulationRunning && (clockValid || (!scheduleEnabled && !holidayEnabled)) &&
+(inputMode!=1 || (sensor[0].valid && sensor[2].valid));
+updateVirtualBurner(set,permitted);
+   if(simulationRunning && inputMode==0){
+boilerTemp=constrain(boilerTemp+(burnerDemand?HEATING_C_PER_S:-COOLING_C_PER_S)*SIM_STEP_SECONDS,0.0f,110.0f);
+set=desiredBoiler();
+   }
+if(!permitted)setVirtualBurner(false);
+updateVirtualPump(permitted);
+relayUpdate();
+   // Nur Zustandswechsel protokollieren, nicht jede Sekunde.
+static bool logInit=false,prevPump=false,prevPermitted=false,prevSim=false;
+if(!logInit){logInit=true;
+   prevPump=pumpDemand;
+   prevPermitted=permitted;
+   prevSim=simulationRunning;
+   }
+if(prevSim!=simulationRunning){eventLog("SIMULATION",simulationRunning?"Simulation gestartet":"Simulation pausiert");
+   prevSim=simulationRunning;
+   }
+if(prevPermitted!=permitted){eventLog("FREIGABE",permitted?"Freigabe erteilt":"Freigabe entzogen: Automatik/Simulation/Uhr/Sensoren pruefen");
+   prevPermitted=permitted;
+   }
+if(previousDemand!=burnerDemand){eventLog("BRENNER",String("Virtuelle Anforderung ")+(burnerDemand?"EIN: Kessel unter Einschaltschwelle":"AUS: Sollgrenze erreicht oder Freigabe entzogen")+", Kessel="+String(boilerTemp,1)+", Soll="+String(set,1));
+   }
+if(prevPump!=pumpDemand){eventLog("PUMPE",String("Virtuelle Anforderung ")+(pumpDemand?"EIN":"AUS")+", Ursache="+pumpReason()+", Frost="+String(pumpFrostRequest?"ja":"nein")+", Nachlauf="+String(pumpOverrunRemaining())+"s");
+   prevPump=pumpDemand;
+   }
+   if(simulationRunning){
+simulationSeconds++;
+if(burnerDemand)burnerSeconds++;
+if(pumpDemand)pumpSeconds++;
+if(burnerDemand && !previousDemand)burnerStarts++;
+   }
+if(lastHistoryMs==0 || millis()-lastHistoryMs>=300000UL){lastHistoryMs=millis();
+   historySample();
+   }
+refreshDisplay();
+Serial.printf("ADS1115: I2C %s, Fehler %lu, Wiederherstellungen %lu, OK-Zyklen %lu | AIN0 %.4f V, AIN1 %.4f V, AIN2 %.4f V (Poti-Test/Diagnose)\n",adsReady?"OK":"FEHLER",(unsigned long)adsErrorCount,(unsigned long)adsRecoveryCount,(unsigned long)adsGoodPolls,sensor[0].volts,sensor[1].volts,sensor[2].volts);
+Serial.printf("Pumpe(sim) %s | Heizbedarf %s, Frost %s, Sommer %s, Nachlauf %lu s\n",pumpDemand?"EIN":"AUS",pumpHeatRequest?"JA":"NEIN",pumpFrostRequest?"JA":"NEIN",pumpSummerLock?"JA":"NEIN",(unsigned long)pumpOverrunRemaining());
+Serial.printf("Aussen %.1f Raum %.1f Kessel %.1f Soll %.1f Brenner(sim) %s | Hyst %.1f C, Min EIN %u s, Min AUS %u s, Sperre %lu s\n",outsideTemp,roomTemp,boilerTemp,set,burnerDemand?"EIN":"AUS",hysteresis,minBurnerOnSeconds,minBurnerOffSeconds,(unsigned long)burnerLockRemaining());
+ }
+}
