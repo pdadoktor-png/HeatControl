@@ -1084,19 +1084,19 @@ if(boilerValid){
   boilerPoints[0]={0,(decltype(boilerPoints[0].y))by};
   boilerPoints[1]={(decltype(boilerPoints[0].x))GW,(decltype(boilerPoints[0].y))by};
   lv_line_set_points(boilerLine,boilerPoints,2);
-  lv_obj_remove_flag(boilerLine,LV_OBJ_FLAG_HIDDEN);
-} else lv_obj_add_flag(boilerLine,LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(boilerLine, false);
+} else lv_obj_set_hidden(boilerLine, true);
 if(setpointValid){
   int ty=constrain(graphY(setpoint)-GY,0,GH);
   targetPoints[0]={0,(decltype(targetPoints[0].y))ty};
   targetPoints[1]={(decltype(targetPoints[0].x))GW,(decltype(targetPoints[0].y))ty};
   lv_line_set_points(targetLine,targetPoints,2);
-  lv_obj_remove_flag(targetLine,LV_OBJ_FLAG_HIDDEN);
-} else lv_obj_add_flag(targetLine,LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(targetLine, false);
+} else lv_obj_set_hidden(targetLine, true);
 if(outsideValid && setpointValid){
   lv_obj_set_pos(marker,graphX(outsideTemp)-5,graphY(setpoint)-5);
-  lv_obj_remove_flag(marker,LV_OBJ_FLAG_HIDDEN);
-} else lv_obj_add_flag(marker,LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_hidden(marker, false);
+} else lv_obj_set_hidden(marker, true);
 char aText[24],rText[24],bText[24],sText[24];
 if(outsideValid) snprintf(aText,sizeof(aText),"%.1f C",outsideTemp); else snprintf(aText,sizeof(aText),"--- C");
 if(isfinite(roomTemp)) snprintf(rText,sizeof(rText),"%.1f C",roomTemp); else snprintf(rText,sizeof(rText),"--- C");
