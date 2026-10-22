@@ -461,7 +461,7 @@ bool valid=false;
 SensorReading sensor[3];
 static constexpr float DIVIDER_R=NTC_DIVIDER_R;
 static constexpr float SENSOR_VDD=3.3f;
-static constexpr float TEMP_BETA[3]={NTC_BETA,NTC_BETA,NTC_BETA};
+static constexpr float TEMP_BETA[3]={NTC_A0_BETA,NTC_A1_BETA,NTC_A2_BETA};
 // Individuelle NTC-Nennwiderstaende; Wolf-Fuehlerkennlinien noch nicht kalibriert.
 static constexpr float TEMP_R25[3]={NTC_A0_R25,NTC_A1_R25,NTC_A2_R25};
 uint32_t lastSensorPoll=0;
