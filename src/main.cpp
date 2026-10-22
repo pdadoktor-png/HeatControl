@@ -459,12 +459,11 @@ struct SensorReading { float volts=NAN, ohms=NAN, temp=NAN;
 bool valid=false;
 };
 SensorReading sensor[3];
-static constexpr float DIVIDER_R=5000.0f;
+static constexpr float DIVIDER_R=NTC_DIVIDER_R;
 static constexpr float SENSOR_VDD=3.3f;
-static constexpr float TEMP_BETA[3]={3950.0f,3950.0f,3950.0f};
-// Nur Testkennlinien! Wolf-Fuehler noch nicht kalibriert.
-static constexpr float TEMP_R25[3]={5000.0f,5000.0f,5000.0f};
-// 5 kOhm bei 25 C (Testannahme)
+static constexpr float TEMP_BETA[3]={NTC_BETA,NTC_BETA,NTC_BETA};
+// Individuelle NTC-Nennwiderstaende; Wolf-Fuehlerkennlinien noch nicht kalibriert.
+static constexpr float TEMP_R25[3]={NTC_A0_R25,NTC_A1_R25,NTC_A2_R25};
 uint32_t lastSensorPoll=0;
 bool adsPing(){
 Wire.beginTransmission(ADS_ADDRESS);
