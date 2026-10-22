@@ -144,6 +144,24 @@ LittleFS.remove("/events-old.csv");
 if(!LittleFS.rename("/events.csv","/events-old.csv"))eventFileErrors++;
   }
 }
+static void eventLoadFromFlash(){
+ if(!historyFS)return;
+ for(const char *path : {"/events-old.csv","/events.csv"}){
+  File f=LittleFS.open(path,"r");
+  if(!f)continue;
+  while(f.available()){
+   String line=f.readStringUntil('\n');line.trim();
+   int a=line.indexOf(';'),b=line.indexOf(';',a+1),c=line.indexOf(';',b+1);
+   if(a<0||b<0||c<0)continue;
+   EventEntry e={(uint32_t)strtoul(line.substring(0,a).c_str(),nullptr,10),
+                 (uint32_t)strtoul(line.substring(a+1,b).c_str(),nullptr,10),
+                 line.substring(b+1,c),line.substring(c+1)};
+   events[eventHead]=e;eventHead=(eventHead+1)%EVENT_MAX;
+   if(eventCount<EVENT_MAX)eventCount++;
+  }
+  f.close();
+ }
+}
 static void eventSendJson(){
 server.sendHeader("Cache-Control","no-store");
 server.setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -696,6 +714,7 @@ static void refreshDisplay();
 static void touchManualMode(lv_event_t *e){
  bool hand=(intptr_t)lv_event_get_user_data(e)==1;
  manualMode=hand;automatic=!hand;manualBurner=false;manualPump=false;
+ eventLog("BETRIEB",hand?"Touch: Handbetrieb":"Touch: Automatik");
  setVirtualBurner(false);pumpDemand=false;refreshDisplay();
 }
 static void touchManualOutputs(lv_event_t *e){
@@ -703,6 +722,7 @@ static void touchManualOutputs(lv_event_t *e){
  intptr_t action=(intptr_t)lv_event_get_user_data(e);
  manualBurner=action==1 && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;manualPump=action==1 || action==2;
  if(manualBurner) sensorFaultLatched=false;
+ eventLog("BEDIENUNG",String("Touch: Brenner ")+(manualBurner?"EIN":"AUS")+", Pumpe "+(manualPump?"EIN":"AUS"));
  refreshDisplay();
 }
 static void touchAck(lv_event_t *) {
@@ -1401,6 +1421,7 @@ tankLastDeliveryL=prefs.getFloat("tankLast",0);
 tankDeliveryCount=prefs.getUInt("tankCount",0);
 oilLitersPerHour=constrain(prefs.getFloat("oilRate",2.0f),0.1f,20.f);
 historyInit();
+eventLoadFromFlash();
 eventLog("SYSTEM","Neustart; PCF8574 wird initialisiert; Niedervolt-Pruefstand");
 initProgram();
  inputMode=1; // Ausschliesslich ADS1115/NTC
@@ -1539,6 +1560,7 @@ else if(mode=="manual"){manualMode=true;automatic=false;manualBurner=false;manua
 else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1" && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;
 if(manualBurner) sensorFaultLatched=false;manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
 else {server.send(400,"text/plain","Ungueltiger Handbefehl");return;}
+eventLog("BETRIEB",String("Web: ")+(manualMode?"Handbetrieb":"Automatik")+", Brenner "+(manualBurner?"EIN":"AUS")+", Pumpe "+(manualPump?"EIN":"AUS"));
 server.send(200,"application/json",json());
 });
 server.on("/api/config",HTTP_POST,[]{
@@ -1675,9 +1697,10 @@ relayUpdate();
    // Nur Zustandswechsel protokollieren, nicht jede Sekunde.
 static bool logInit=false,prevPump=false,prevPermitted=false,prevSim=false;
 if(!logInit){logInit=true;
-   prevPump=pumpDemand;
-   prevPermitted=permitted;
-   prevSim=simulationRunning;
+   prevPump=pumpDemand;prevPermitted=permitted;prevSim=simulationRunning;
+   eventLog("FREIGABE",permitted?"Automatik aktiv":"Automatik nicht freigegeben");
+   eventLog("BRENNER",String("Startzustand ")+(burnerDemand?"EIN":"AUS"));
+   eventLog("PUMPE",String("Startzustand ")+(pumpDemand?"EIN":"AUS"));
    }
 if(prevSim!=simulationRunning){eventLog("SIMULATION",simulationRunning?"Simulation gestartet":"Simulation pausiert");
    prevSim=simulationRunning;
