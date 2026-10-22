@@ -84,6 +84,7 @@ bool pumpDemand=false;
 uint8_t inputMode=1;
 static constexpr float POT_MAX_R=20000.0f;
 bool simulationRunning=true; // Automatischer Start nur am Niedervolt-Pruefstand.
+static bool sensorFaultLatched=false; // Hand-Brenner bleibt nach Sensor-/Grenzwertfehler AUS.
 uint32_t simCommandSequence=0;
 // Simuliertes thermisches Modell, kein realer Brenner.
 // Bei Brenner EIN: +0.20 C/s, bei AUS: -0.06 C/s (vereinfachtes Modell).
@@ -687,7 +688,8 @@ static void touchManualMode(lv_event_t *e){
 static void touchManualOutputs(lv_event_t *e){
  if(!manualMode)return;
  intptr_t action=(intptr_t)lv_event_get_user_data(e);
- manualBurner=action==1 && sensor[0].valid && sensor[2].valid;manualPump=action==1 || action==2;
+ manualBurner=action==1 && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;manualPump=action==1 || action==2;
+ if(manualBurner) sensorFaultLatched=false;
  refreshDisplay();
 }
 static void touchAck(lv_event_t *) {
@@ -1313,8 +1315,8 @@ eventLog("RELAIS","Niedervolt-Pruefstand: Ausgaenge nach I2C-Wiedererkennung fre
 Serial.println("PCF8574: nachtraeglich erkannt, Pruefstand-Ausgaenge freigegeben");
   }
 uint8_t wanted=PCF_OFF;
-  if(relayBenchAuto && !relayOtaInProgress && simulationRunning && (automatic || manualMode) && pcfOutputHealthy){
-if(burnerDemand)wanted &= (uint8_t)~0x01;
+  if(relayBenchAuto && !relayOtaInProgress && simulationRunning && (automatic || manualMode) && pcfOutputHealthy && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f){
+if(burnerDemand && (!manualMode || (!sensorFaultLatched && manualBurner)))wanted &= (uint8_t)~0x01;
 if(pumpDemand)wanted &= (uint8_t)~0x02;
   }
 pcfRequested=wanted;
@@ -1519,7 +1521,8 @@ server.send(200,"application/json",json());
 String mode=server.arg("mode");
 if(mode=="auto"){manualMode=false;manualBurner=false;manualPump=false;automatic=true;setVirtualBurner(false);pumpDemand=false;}
 else if(mode=="manual"){manualMode=true;automatic=false;manualBurner=false;manualPump=false;setVirtualBurner(false);pumpDemand=false;}
-else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1" && sensor[0].valid && sensor[2].valid;manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
+else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1" && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;
+if(manualBurner) sensorFaultLatched=false;manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
 else {server.send(400,"text/plain","Ungueltiger Handbefehl");return;}
 server.send(200,"application/json",json());
 });
@@ -1628,7 +1631,7 @@ server.handleClient();
 maintainOTA();
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
  pollSensors();
- if(!applyPotiTemperatures()){setVirtualBurner(false); manualBurner=false; manualPump=false; }}
+ if(!applyPotiTemperatures()){setVirtualBurner(false); manualBurner=false; manualPump=false; sensorFaultLatched=true; pumpDemand=false; relayUpdate(); }}
 static uint32_t prevTick=millis();
 uint32_t now=millis();
 lv_tick_inc(now-prevTick);
@@ -1643,7 +1646,8 @@ bool previousDemand=burnerDemand;
 bool permitted=automatic && !manualMode && simulationRunning && (clockValid || (!scheduleEnabled && !holidayEnabled)) && sensorsOk;
 if(manualMode){
 bool safe=simulationRunning && sensorsOk && isfinite(boilerTemp) && boilerTemp<75.0f;
-setVirtualBurner(safe && manualBurner);
+if(!safe){manualBurner=false; sensorFaultLatched=true;}
+setVirtualBurner(safe && !sensorFaultLatched && manualBurner);
 }else updateVirtualBurner(set,permitted);
    // Keine Temperatursimulation; Kesseltemperatur ausschliesslich ADS1115.
 if(!permitted && !manualMode)setVirtualBurner(false);
