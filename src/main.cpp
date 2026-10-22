@@ -83,7 +83,7 @@ bool pumpDemand=false;
 // 0: Software-Simulation, 1: Poti-Test (ADS1115), 2: NTC (gesperrt bis Kalibrierung).
 uint8_t inputMode=1;
 static constexpr float POT_MAX_R=20000.0f;
-bool simulationRunning=false;
+bool simulationRunning=true; // Automatischer Start nur am Niedervolt-Pruefstand.
 uint32_t simCommandSequence=0;
 // Simuliertes thermisches Modell, kein realer Brenner.
 // Bei Brenner EIN: +0.20 C/s, bei AUS: -0.06 C/s (vereinfachtes Modell).
@@ -687,7 +687,7 @@ static void touchManualMode(lv_event_t *e){
 static void touchManualOutputs(lv_event_t *e){
  if(!manualMode)return;
  intptr_t action=(intptr_t)lv_event_get_user_data(e);
- manualBurner=action==1;manualPump=action==1 || action==2;
+ manualBurner=action==1 && sensor[0].valid && sensor[2].valid;manualPump=action==1 || action==2;
  refreshDisplay();
 }
 static void touchAck(lv_event_t *) {
@@ -809,7 +809,7 @@ intptr_t d=(intptr_t)lv_event_get_user_data(e);
 hysteresis=roundf(constrain(hysteresis+0.5f*(float)d,2.0f,15.0f)*2.0f)/2.0f;
 prefs.putFloat("hyst",hysteresis);
 }
-static void toggleSimulation(lv_event_t *){simulationRunning=!simulationRunning;
+static void toggleSimulation(lv_event_t *){
 }
 static lv_obj_t* makeLabel(lv_obj_t *parent,const char *value,int x,int y){
 lv_obj_t *o=lv_label_create(parent);
@@ -1034,7 +1034,7 @@ makeButton(root,"K -",163,206,72,adjustBoiler,-1);
 makeButton(root,"K +",242,206,72,adjustBoiler,1);
 makeButton(root,"S -",321,206,72,adjustSlope,-1);
 makeButton(root,"S +",400,206,72,adjustSlope,1);
-makeButton(root,"Sim EIN/AUS",348,119,104,toggleSimulation,0);
+
 
 lv_obj_t *overview=pages[0];
 makeLabel(overview,"HEATCONTROL - UEBERSICHT",10,2);
@@ -1044,7 +1044,7 @@ lv_obj_set_width(overviewInfo,460);
 lv_obj_set_style_text_font(overviewInfo,&lv_font_montserrat_14,0);
 makeButton(overview,"Automatik",10,152,145,touchManualMode,0);
 makeButton(overview,"Handbetrieb",166,152,145,touchManualMode,1);
-makeButton(overview,"Sim EIN/AUS",322,152,145,toggleSimulation,0);
+
 makeButton(overview,"Brenner EIN",10,191,145,touchManualOutputs,1);
 makeButton(overview,"Brenner AUS",166,191,145,touchManualOutputs,2);
 makeButton(overview,"Alles AUS",322,191,145,touchManualOutputs,0);
@@ -1519,7 +1519,7 @@ server.send(200,"application/json",json());
 String mode=server.arg("mode");
 if(mode=="auto"){manualMode=false;manualBurner=false;manualPump=false;automatic=true;setVirtualBurner(false);pumpDemand=false;}
 else if(mode=="manual"){manualMode=true;automatic=false;manualBurner=false;manualPump=false;setVirtualBurner(false);pumpDemand=false;}
-else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1";manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
+else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1" && sensor[0].valid && sensor[2].valid;manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
 else {server.send(400,"text/plain","Ungueltiger Handbefehl");return;}
 server.send(200,"application/json",json());
 });
@@ -1541,34 +1541,8 @@ prefs.putFloat("slope",slope);
    prefs.putUInt("minOff",minBurnerOffSeconds);
 server.send(200,"application/json",json());
 });
- server.on("/api/sim",HTTP_POST,[]{
-String cmd=server.arg("cmd");
-if(cmd=="start")simulationRunning=true;
-else if(cmd=="pause"){simulationRunning=false;
-   setVirtualBurner(false);
-   }
-else if(cmd=="toggle"){simulationRunning=!simulationRunning;
-   if(!simulationRunning)setVirtualBurner(false);
-   }
-   else if(cmd=="reset"){
-simulationRunning=false;
-     setVirtualBurner(false);
-     burnerStarts=0;
-     burnerSeconds=0;
-     simulationSeconds=0;
-outsideTemp=NAN;
-     roomTemp=NAN;
-     boilerTemp=NAN;
-   }
-else {server.send(400,"text/plain","Unbekannter Simulationsbefehl");
-   return;
-   }
-simCommandSequence++;
-Serial.printf("WEB SIM: cmd=%s, running=%d, sequence=%lu\n",cmd.c_str(),simulationRunning,(unsigned long)simCommandSequence);
-server.sendHeader("Cache-Control","no-store");
-server.send(200,"application/json",json());
-});
-server.on("/api/program",HTTP_GET,[]{server.send(200,"application/json",programJson());});
+ server.on("/api/sim",HTTP_POST,[]{server.send(410,"text/plain","Regelung startet automatisch");});
+ server.on("/api/program",HTTP_GET,[]{server.send(200,"application/json",programJson());});
  server.on("/api/program",HTTP_POST,[]{
 if(!server.hasArg("days")){server.send(400,"text/plain","days fehlt");
    return;
@@ -1654,7 +1628,7 @@ server.handleClient();
 maintainOTA();
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
  pollSensors();
- if(!applyPotiTemperatures()){simulationRunning=false; setVirtualBurner(false); }}
+ if(!applyPotiTemperatures()){setVirtualBurner(false); manualBurner=false; manualPump=false; }}
 static uint32_t prevTick=millis();
 uint32_t now=millis();
 lv_tick_inc(now-prevTick);
