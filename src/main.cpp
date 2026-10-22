@@ -679,6 +679,17 @@ static lv_obj_t *schedInfo=nullptr,*holidayInfo=nullptr,*overviewInfo=nullptr,*t
 static lv_obj_t *scheduleFeedback=nullptr,*holidayFeedback=nullptr;
 static uint32_t feedbackUntil=0;
 static void refreshDisplay();
+static void touchManualMode(lv_event_t *e){
+ bool hand=(intptr_t)lv_event_get_user_data(e)==1;
+ manualMode=hand;automatic=!hand;manualBurner=false;manualPump=false;
+ setVirtualBurner(false);pumpDemand=false;refreshDisplay();
+}
+static void touchManualOutputs(lv_event_t *e){
+ if(!manualMode)return;
+ intptr_t action=(intptr_t)lv_event_get_user_data(e);
+ manualBurner=action==1;manualPump=action==1 || action==2;
+ refreshDisplay();
+}
 static void touchAck(lv_event_t *) {
 evaluateProgram();
 feedbackUntil=millis()+2500;
@@ -1026,14 +1037,18 @@ makeButton(root,"S +",400,206,72,adjustSlope,1);
 makeButton(root,"Sim EIN/AUS",348,119,104,toggleSimulation,0);
 
 lv_obj_t *overview=pages[0];
-makeLabel(overview,"HEATCONTROL - SIMULATION",10,6);
-overviewInfo=makeLabel(overview,"",10,31);
+makeLabel(overview,"HEATCONTROL - UEBERSICHT",10,2);
+overviewInfo=makeLabel(overview,"",10,22);
 lv_obj_set_width(overviewInfo,460);
   lv_label_set_long_mode(overviewInfo,LV_LABEL_LONG_WRAP);
 lv_obj_set_style_text_font(overviewInfo,&lv_font_montserrat_14,0);
-makeButton(overview,"Simulation umschalten",10,158,220,toggleSimulation,0);
-touchFeedback=makeLabel(overview,"Bereit",10,198);
-makeButton(overview,"Touch kalibrieren",245,158,220,touchCalButton,0);
+makeButton(overview,"Automatik",10,152,145,touchManualMode,0);
+makeButton(overview,"Handbetrieb",166,152,145,touchManualMode,1);
+makeButton(overview,"Sim EIN/AUS",322,152,145,toggleSimulation,0);
+makeButton(overview,"Brenner EIN",10,191,145,touchManualOutputs,1);
+makeButton(overview,"Brenner AUS",166,191,145,touchManualOutputs,2);
+makeButton(overview,"Alles AUS",322,191,145,touchManualOutputs,0);
+touchFeedback=makeLabel(overview,"",10,230);
 lv_obj_t *schedule=pages[2];
 schedInfo=makeLabel(schedule,"",8,6);
 lv_obj_set_width(schedInfo,460);
@@ -1124,11 +1139,24 @@ struct tm t{};
     bool valid=clockNow(t);
     char stamp[32]="--:--";
 if(valid)strftime(stamp,sizeof(stamp),"%d.%m.%Y %H:%M",&t);
-    snprintf(buffer,sizeof(buffer),"Uhrzeit: %s%s\nSimulation: %s  Brenner: %s\nUrlaub: %s  Schaltuhr: %s\nStarts: %lu  Laufzeit: %.2f h\nOel geschaetzt: %.2f L (%.1f L/h)\nKessel: %s  Soll: %s",
-      stamp,valid?"":" (ungueltig)",simulationRunning?"LAEUFT":"PAUSE",burnerDemand?"EIN":"AUS",
-      holidayActive?"AKTIV":"AUS",scheduleEnabled?"EIN":"AUS",
-      (unsigned long)burnerStarts,burnerSeconds/3600.0f,
-burnerSeconds*oilLitersPerHour/3600.0f,oilLitersPerHour,bText,sText);
+    const String pumpText=manualMode?(pumpDemand?"Handbetrieb":"AUS"):pumpReason();
+const unsigned long overrun=(unsigned long)pumpOverrunRemaining();
+const unsigned long lock=(unsigned long)burnerLockRemaining();
+const char *fault=(!sensor[0].valid||!sensor[2].valid)?"SENSOR A0/A2":(isfinite(boilerTemp)&&boilerTemp>=75.f?"KESSEL >=75 C":"OK");
+snprintf(buffer,sizeof(buffer),
+"Uhr: %s  %s  Test: %s\n"
+"Aussen %s  Raum %s\n"
+"Kessel %s  Soll %s  S %.1f\n"
+"Brenner %s  Sperre %lu s\n"
+"Pumpe %s  %s\n"
+"Nachlauf %lu s  Sommer %s  Frost %s\n"
+"Sensoren %s  Uhr %s  Urlaub %s",
+stamp,manualMode?"HAND":"AUTOMATIK",simulationRunning?"LAEUFT":"PAUSE",
+aText,rText,bText,sText,slope,
+burnerDemand?"EIN":"AUS",lock,
+pumpDemand?"EIN":"AUS",pumpText.c_str(),
+overrun,pumpSummerLock?"JA":"NEIN",pumpFrostRequest?"JA":"NEIN",
+fault,clockValid?"OK":"FEHLT",holidayActive?"JA":"NEIN");
 lv_label_set_text(overviewInfo,buffer);
     if(feedbackUntil && (int32_t)(millis()-feedbackUntil)>=0){
 if(touchFeedback)lv_label_set_text(touchFeedback,"Bereit");
