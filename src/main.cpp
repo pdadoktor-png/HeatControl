@@ -1369,6 +1369,12 @@ Serial.println("PCF8574: erkannt; Pruefstand-Ausgaenge automatisch freigegeben (
   }
 }
 static void relayUpdate(){
+if(inputMode==0){
+  if(relayTestActive)relayTestStop("Software-Simulation");
+  if(relayBenchAuto)relayBenchStop("Software-Simulation");
+  if(pcfPresent && pcfLastWritten!=PCF_OFF)pcfWrite(PCF_OFF);
+  return;
+}
 const uint32_t now=millis();
   if(relayBenchAuto && (relayOtaInProgress || !pcfPresent || !pcfOutputHealthy)){
 relayBenchStop("I2C / OTA");
