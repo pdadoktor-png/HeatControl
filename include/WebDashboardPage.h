@@ -5,7 +5,7 @@
 // Statisches Web-Dashboard. Unveraendert aus main.cpp ausgelagert.
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HeatControl</title><style>
 body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin:15px auto;padding:0 12px}section{background:#203247;border-radius:12px;padding:15px;margin:10px 0}input{font-size:16px;max-width:100%;box-sizing:border-box;padding:7px;background:#f8fbff;color:#111}input[type=checkbox]{width:auto}input[type=time]{width:120px}input[type=number]{width:90px}button{padding:10px;background:#e7a94c;border:0;border-radius:8px;font-size:15px;margin:3px;cursor:pointer}nav button{background:#35516b;color:white}nav button.sel{background:#e7a94c;color:#111}.tab{display:none}.tab.sel{display:block}.phase{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #456}label{display:inline-block;margin:5px 8px 5px 0}small{color:#b6c4d3}.warn{color:#ffbe7a}
-</style><h2>HeatControl v0.5.9.1</h2><p class="warn">TOUCH-KALIBRIERUNG – PCF8574-I2C-Diagnose und Pruefstand-Automatik</p>
+.sensor-table-wrap{overflow-x:auto;margin-top:12px}.sensor-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;white-space:nowrap}.sensor-table th,.sensor-table td{padding:10px 12px;border-bottom:1px solid #496079;text-align:right}.sensor-table thead th{color:#c8d8e9;background:#17293b;font-size:14px}.sensor-table th:first-child,.sensor-table td:first-child{text-align:left}.sensor-table tbody tr:nth-child(even){background:#253b52}.sensor-summary{line-height:1.6}</style><h2>HeatControl v0.5.9.1</h2><p class="warn">TOUCH-KALIBRIERUNG – PCF8574-I2C-Diagnose und Pruefstand-Automatik</p>
 <nav><button onclick="tab('overview')">Übersicht</button><button onclick="tab('curve')">Heizkurve</button><button onclick="tab('pump')">Pumpe</button><button onclick="tab('tank')">Öltank</button><button onclick="tab('stats')">Statistik</button><button onclick="tab('opt');loadOptimization()">Optimierung</button><button onclick="tab('events');loadEvents()">Ereignisse</button><button onclick="tab('sensors')">Sensoren</button><button onclick="tab('schedule')">Schaltuhr</button><button onclick="tab('holiday')">Urlaub</button></nav>
 <section id="overview" class="tab sel"><h3>Aktueller Zustand</h3><div id="state">Lade ...</div><h4>Handbetrieb (Niedervolt-Pruefstand)</h4><div id="manualState">Lade ...</div><button onclick="setManualMode('manual')">Handbetrieb</button><button onclick="setManualMode('auto')">Automatik</button><p><button onclick="setManualOutputs(1,1)">Brenner EIN</button><button onclick="setManualOutputs(0,1)">Brenner AUS / Pumpe EIN</button><button onclick="setManualOutputs(0,0)">Alles AUS</button></p><p><small>Nur Testaufbau: Brennerfreigabe bei gueltigen A0/A2 und Kessel unter 75 C. Kein echter Oelbrenner.</small></p><h4>Relais-Diagnose (Niedervolt-Pruefstand)</h4><div id="relayDiag">Lade ...</div></section><p id="feedback" role="status" style="padding:8px 12px;background:#35516b;border-radius:8px">Bereit</p>
 <section id="events" class="tab"><h3>Ereignis- und Fehlerprotokoll</h3><p><small>Echte ADS1115-Messwerte und manuelle Tankbuchungen; Brenner- und Pumpenanforderungen sind Steuerbefehle, keine Rueckmeldung eines realen Brennerlaufs. Maximal 500 aktuelle Ereignisse im Web; CSV mit gespeichertem Verlauf.</small></p><label>Filter <select id="eventFilter" onchange="loadEvents()"><option value="">Alle</option><option>BRENNER</option><option>PUMPE</option><option>FREIGABE</option><option>SIMULATION</option><option>SYSTEM</option><option>OELTANK</option><option>OELLIEFERUNG</option></select></label><button onclick="loadEvents()">Aktualisieren</button><a href="/api/events.csv" style="color:#82d8ff">CSV herunterladen</a> <button onclick="resetEvents()">Ereignisse löschen</button><p id="eventInfo"></p><div id="eventRows" style="max-height:450px;overflow:auto"></div></section>
@@ -99,13 +99,16 @@ async function loadSensors(){
  try{
   const r=await fetch('/api/sensors',{cache:'no-store'});
   if(!r.ok)throw Error(r.status);
-  const j=await r.json(),names=['Aussen','Raum','Kessel'];
-  $('sensorState').innerHTML='ADS1115: '+(j.connected?'verbunden':'nicht gefunden')+
-    ' | I2C Fehler: '+j.i2cErrors+' | Wiederherstellungen: '+j.recoveries+
-    '<br><small>Aktuell = letzter Messwert, Mittel = gleitender Mittelwert aus ca. 20 Sekunden.</small><br>'+
-    j.channels.map((c,i)=>names[i]+': '+(c.valid
-      ?'Aktuell <b>'+Number(c.tempCurrent).toFixed(1)+' °C</b> | Mittel <b>'+Number(c.tempApprox).toFixed(1)+' °C</b> | '+Number(c.volts).toFixed(3)+' V / '+Number(c.ohms).toFixed(0)+' Ohm'
-      :'Sensorfehler / ungueltig')).join('<br>');
+  const j=await r.json(),names=['Außen','Raum','Kessel'];
+  const value=(v,d,unit)=>v==null||!Number.isFinite(Number(v))?'—':Number(v).toFixed(d)+' '+unit;
+  const rows=j.channels.map((c,i)=>'<tr><th scope="row">'+names[i]+'</th>'+
+    (c.valid
+      ?'<td>'+value(c.tempCurrent,1,'°C')+'</td><td><b>'+value(c.tempApprox,1,'°C')+'</b></td><td>'+value(c.volts,3,'V')+'</td><td>'+value(c.ohms,0,'Ω')+'</td>'
+      :'<td colspan="4" style="color:#ffb0a9">Sensorfehler / ungültig</td>')+'</tr>').join('');
+  $('sensorState').innerHTML='<div class="sensor-summary">ADS1115: '+(j.connected?'verbunden':'nicht gefunden')+
+    ' · I²C-Fehler: '+j.i2cErrors+' · Wiederherstellungen: '+j.recoveries+'</div>'+
+    '<div class="sensor-table-wrap"><table class="sensor-table"><thead><tr><th>Sensor</th><th>Aktuell</th><th>Mittel (20 s)</th><th>Spannung</th><th>Widerstand</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<p><small>Aktuell: letzter Messwert. Mittel: gleitender Temperaturmittelwert.</small></p>';
  }catch(e){$('sensorState').textContent='Sensorabfrage fehlgeschlagen: '+e.message}
 }
 async function heatControlSimCommand(cmd){
