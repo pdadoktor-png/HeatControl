@@ -1457,6 +1457,26 @@ server.on("/api/status",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store"
 server.on("/api/optimization",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",optimizationJson());});
 server.on("/api/events",HTTP_GET,[]{eventSendJson();});
 server.on("/api/events.csv",HTTP_GET,[]{eventSendCsv();});
+ server.on("/api/events/reset",HTTP_POST,[]{
+   if(historyFS){
+     if(LittleFS.exists("/events.csv") && !LittleFS.remove("/events.csv")){server.send(500,"text/plain","Ereignisdatei konnte nicht geloescht werden");return;}
+     if(LittleFS.exists("/events-old.csv") && !LittleFS.remove("/events-old.csv")){server.send(500,"text/plain","Alte Ereignisdatei konnte nicht geloescht werden");return;}
+   }
+   eventHead=0;eventCount=0;eventFileErrors=0;
+   server.send(200,"application/json","{\"ok\":true}");
+ });
+ server.on("/api/history/reset",HTTP_POST,[]{
+   if(historyFS){
+     if(LittleFS.exists(HISTORY_FILE) && !LittleFS.remove(HISTORY_FILE)){server.send(500,"text/plain","Statistikdatei konnte nicht geloescht werden");return;}
+     if(LittleFS.exists("/history.tmp") && !LittleFS.remove("/history.tmp")){server.send(500,"text/plain","Statistik-Zwischendatei konnte nicht geloescht werden");return;}
+   }
+   historyHead=0;historyCount=0;historyWrites=0;historyWriteErrors=0;
+   burnerStarts=0;burnerSeconds=0;pumpSeconds=0;simulationSeconds=0;
+   prefs.putUInt("burnStarts",0);prefs.putUInt("burnSecs",0);
+   prefs.putUInt("pumpSecs",0);prefs.putUInt("simSecs",0);
+   lastHistoryMs=millis();
+   server.send(200,"application/json","{\"ok\":true}");
+ });
 server.on("/api/history/status",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",historyStatusJson());});
 server.on("/api/history",HTTP_GET,[]{historySendJson();});
 server.on("/api/history.csv",HTTP_GET,[]{historyCsv();});
