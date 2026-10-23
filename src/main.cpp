@@ -109,7 +109,7 @@ static uint32_t historyWrites=0;
 static uint32_t historyWriteErrors=0;
 static const char *HISTORY_FILE="/history.csv";
 // Ereignislog: simulierte Anforderungen, keine Rueckmeldung vom realen Brenner.
-static constexpr size_t EVENT_MAX=160;
+static constexpr size_t EVENT_MAX=500;
 struct EventEntry {
 uint32_t epoch;
 uint32_t uptime;
@@ -140,7 +140,7 @@ size_t n=f.printf("%lu;%lu;%s;%s\n",(unsigned long)e.epoch,(unsigned long)e.upti
 size_t size=f.size();
   f.close();
   if(!n)eventFileErrors++;
-  if(size>120000){
+  if(size>250000){
 LittleFS.remove("/events-old.csv");
 if(!LittleFS.rename("/events.csv","/events-old.csv"))eventFileErrors++;
   }
@@ -1484,8 +1484,11 @@ if(end==value.c_str() || *end!='\0' || !isfinite(liters)) {server.send(400,"text
 if(liters<0 || liters>TANK_CAPACITY_L){server.send(400,"text/plain","Bestand muss zwischen 0 und 4200 Litern liegen");
      return;
      }
-tankLiters=liters;
+float previous=tankLiters;
+     bool wasKnown=tankLevelKnown;
+     tankLiters=liters;
      tankLevelKnown=true;
+     eventLog("OELTANK",String(wasKnown?"Tankbestand korrigiert: ":"Anfangsbestand erfasst: ")+String(liters,1)+" L"+(wasKnown?String(" (vorher ")+String(previous,1)+" L)":String("")));
    }else if(action=="delivery"){
 if(!tankLevelKnown){server.send(409,"text/plain","Bitte zuerst Anfangsbestand speichern");
      return;
@@ -1493,7 +1496,9 @@ if(!tankLevelKnown){server.send(409,"text/plain","Bitte zuerst Anfangsbestand sp
 if(liters<=0 || liters>TANK_CAPACITY_L || tankLiters+liters>TANK_CAPACITY_L){server.send(400,"text/plain","Liefermenge ungueltig oder Tankkapazitaet ueberschritten");
      return;
      }
-tankLiters+=liters;
+float previous=tankLiters;
+     tankLiters+=liters;
+     eventLog("OELLIEFERUNG",String("Heizoellieferung: +")+String(liters,1)+" L; Bestand "+String(previous,1)+" -> "+String(tankLiters,1)+" L");
      tankLastDeliveryL=liters;
      tankDeliveryCount++;
 prefs.putFloat("tankLast",tankLastDeliveryL);
