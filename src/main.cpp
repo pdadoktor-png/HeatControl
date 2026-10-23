@@ -1044,11 +1044,22 @@ touchCalInstall();
 lv_obj_t *screen=lv_scr_act();
 lv_obj_set_style_bg_color(screen,lv_color_hex(0x142434),0);
 lv_obj_set_style_text_color(screen,lv_color_hex(0xFFFFFF),0);
+// Globaler Fussbereich, auf allen vier LCD-Tabs sichtbar.
+lv_obj_t *brand=lv_label_create(screen);
+lv_label_set_text(brand,"HeatControl by HK 2026  |  Version 0.5.9.1");
+lv_obj_set_style_text_font(brand,&lv_font_montserrat_14,0);
+lv_obj_set_style_text_color(brand,lv_color_hex(0xC9D8E8),0);
+lv_obj_set_style_bg_color(brand,lv_color_hex(0x142434),0);
+lv_obj_set_style_bg_opa(brand,LV_OPA_COVER,0);
+lv_obj_set_style_pad_left(brand,6,0);
+lv_obj_set_style_pad_right(brand,6,0);
+lv_obj_set_pos(brand,0,252);
+lv_obj_set_size(brand,480,20);
 const char *tabs[]={"Uebersicht","Heizkurve","Schaltuhr","Urlaub"};
   for(int i=0;i<4;i++){
 pages[i]=lv_obj_create(screen);
     lv_obj_set_pos(pages[i],0,32);
-    lv_obj_set_size(pages[i],480,240);
+    lv_obj_set_size(pages[i],480,220);
 lv_obj_set_style_bg_opa(pages[i],LV_OPA_TRANSP,0);
     lv_obj_set_style_border_width(pages[i],0,0);
 lv_obj_set_style_pad_all(pages[i],0,0);
