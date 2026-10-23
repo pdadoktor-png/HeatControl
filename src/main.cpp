@@ -468,6 +468,7 @@ uint32_t lastSensorPoll=0;
 // 20-second moving average per channel (sampling currently every 1.5 seconds).
 static constexpr uint8_t TEMP_FILTER_SAMPLES=14;
 float tempSamples[3][TEMP_FILTER_SAMPLES]={};
+float rawTemperature[3]={NAN,NAN,NAN};
 uint8_t tempSampleCount[3]={},tempSampleNext[3]={};
 float tempSampleSum[3]={};
 static void clearTempFilter(uint8_t channel){
@@ -510,6 +511,7 @@ else Serial.println("ADS1115: nicht erreichbar, nur Simulation");
 void pollSensors(){
   // Ungueltige Werte niemals als gemessene Temperaturen ausgeben.
 for(auto &v:sensor)v=SensorReading{};
+for(float &t:rawTemperature)t=NAN;
   if(!adsPing()){
 adsErrorCount++;
 adsReady=false;
@@ -545,7 +547,7 @@ if(!isfinite(r.ohms)||r.ohms<100.0f||r.ohms>150000.0f){clearTempFilter(i);contin
 float invT=1.0f/298.15f+logf(r.ohms/TEMP_R25[i])/TEMP_BETA[i];
 r.temp=1.0f/invT-273.15f;
 r.valid=isfinite(r.temp)&&r.ohms>=100.0f&&r.ohms<=POT_MAX_R*1.05f;
-    if(r.valid)r.temp=smoothTemperature(i,r.temp);
+    if(r.valid){rawTemperature[i]=r.temp;r.temp=smoothTemperature(i,r.temp);}
     else clearTempFilter(i);
   }
 adsGoodPolls++;
@@ -563,7 +565,8 @@ if(i)out+=",";
 out+="{\"valid\":"+String(sensor[i].valid?"true":"false");
 out+=",\"volts\":"+(isfinite(sensor[i].volts)?String(sensor[i].volts,4):String("null"));
 out+=",\"ohms\":"+(isfinite(sensor[i].ohms)?String(sensor[i].ohms,1):String("null"));
-out+=",\"tempApprox\":"+(sensor[i].valid?String(sensor[i].temp,1):String("null"))+"}";
+out+=",\"tempApprox\":"+(sensor[i].valid?String(sensor[i].temp,1):String("null"));
+out+=",\"tempCurrent\":"+(sensor[i].valid&&isfinite(rawTemperature[i])?String(rawTemperature[i],1):String("null"))+"}";
   }
 return out+"]}";
 }
