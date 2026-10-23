@@ -465,6 +465,27 @@ static constexpr float TEMP_BETA[3]={NTC_A0_BETA,NTC_A1_BETA,NTC_A2_BETA};
 // Individuelle NTC-Nennwiderstaende; Wolf-Fuehlerkennlinien noch nicht kalibriert.
 static constexpr float TEMP_R25[3]={NTC_A0_R25,NTC_A1_R25,NTC_A2_R25};
 uint32_t lastSensorPoll=0;
+// 20-second moving average per channel (sampling currently every 1.5 seconds).
+static constexpr uint8_t TEMP_FILTER_SAMPLES=14;
+float tempSamples[3][TEMP_FILTER_SAMPLES]={};
+uint8_t tempSampleCount[3]={},tempSampleNext[3]={};
+float tempSampleSum[3]={};
+static void clearTempFilter(uint8_t channel){
+  tempSampleCount[channel]=0;
+  tempSampleNext[channel]=0;
+  tempSampleSum[channel]=0;
+}
+static float smoothTemperature(uint8_t channel,float value){
+  if(tempSampleCount[channel]==TEMP_FILTER_SAMPLES){
+    tempSampleSum[channel]-=tempSamples[channel][tempSampleNext[channel]];
+  }else{
+    tempSampleCount[channel]++;
+  }
+  tempSamples[channel][tempSampleNext[channel]]=value;
+  tempSampleSum[channel]+=value;
+  tempSampleNext[channel]=(tempSampleNext[channel]+1)%TEMP_FILTER_SAMPLES;
+  return tempSampleSum[channel]/tempSampleCount[channel];
+}
 bool adsPing(){
 Wire.beginTransmission(ADS_ADDRESS);
 return Wire.endTransmission()==0;
@@ -494,12 +515,13 @@ adsErrorCount++;
 adsReady=false;
     // Ein einzelner erneuter Initialisierungsversuch pro Messzyklus.
 adsInitBus();
-if(!adsReady || !adsPing())return;
+if(!adsReady || !adsPing()){for(uint8_t i=0;i<3;i++)clearTempFilter(i);return;}
 adsRecoveryCount++;
   }
   if(!adsReady){
 adsReady=ads.begin(ADS_ADDRESS,&Wire);
 if(!adsReady){adsErrorCount++;
+    for(uint8_t i=0;i<3;i++)clearTempFilter(i);
     return;
     }
 adsConfigure();
@@ -509,6 +531,7 @@ adsConfigure();
     // Bei Ausfall vor jedem Kanal nicht weiter mit veralteten Daten rechnen.
 if(!adsPing()){adsErrorCount++;
     adsReady=false;
+    for(uint8_t j=0;j<3;j++)clearTempFilter(j);
     return;
     }
 int16_t raw=ads.readADC_SingleEnded(i);
@@ -516,12 +539,14 @@ float v=ads.computeVolts(raw);
 SensorReading &r=sensor[i];
     r.volts=v;
     // 3.3V -- 5k Festwiderstand -- ADC -- NTC -- GND
-if(!isfinite(v)||v<0.04f||v>SENSOR_VDD-0.04f)continue;
+if(!isfinite(v)||v<0.04f||v>SENSOR_VDD-0.04f){clearTempFilter(i);continue;}
 r.ohms=DIVIDER_R*v/(SENSOR_VDD-v);
-if(!isfinite(r.ohms)||r.ohms<100.0f||r.ohms>150000.0f)continue;
+if(!isfinite(r.ohms)||r.ohms<100.0f||r.ohms>150000.0f){clearTempFilter(i);continue;}
 float invT=1.0f/298.15f+logf(r.ohms/TEMP_R25[i])/TEMP_BETA[i];
 r.temp=1.0f/invT-273.15f;
 r.valid=isfinite(r.temp)&&r.ohms>=100.0f&&r.ohms<=POT_MAX_R*1.05f;
+    if(r.valid)r.temp=smoothTemperature(i,r.temp);
+    else clearTempFilter(i);
   }
 adsGoodPolls++;
 }
