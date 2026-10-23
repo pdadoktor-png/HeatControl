@@ -1417,6 +1417,10 @@ Serial.begin(115200);
  delay(300);
  Serial.println("HeatControl v0.5.9.1 – SIMULATION / RELAIS-PRUEFSTAND");
 prefs.begin("heatcontrol",false);
+ burnerStarts=prefs.getUInt("burnStarts",0);
+ burnerSeconds=prefs.getUInt("burnSecs",0);
+ pumpSeconds=prefs.getUInt("pumpSecs",0);
+ simulationSeconds=prefs.getUInt("simSecs",0);
 tankLevelKnown=prefs.getBool("tankKnown",false);
 tankLiters=constrain(prefs.getFloat("tankLiters",0),0.0f,TANK_CAPACITY_L);
 tankLastDeliveryL=prefs.getFloat("tankLast",0);
@@ -1740,6 +1744,10 @@ if(burnerDemand && !previousDemand)burnerStarts++;
    }
 if(lastHistoryMs==0 || millis()-lastHistoryMs>=300000UL){lastHistoryMs=millis();
    historySample();
+   prefs.putUInt("burnStarts",burnerStarts);
+   prefs.putUInt("burnSecs",burnerSeconds);
+   prefs.putUInt("pumpSecs",pumpSeconds);
+   prefs.putUInt("simSecs",simulationSeconds);
    }
 refreshDisplay();
 Serial.printf("ADS1115: I2C %s, Fehler %lu, Wiederherstellungen %lu, OK-Zyklen %lu | AIN0 %.4f V, AIN1 %.4f V, AIN2 %.4f V (Poti-Test/Diagnose)\n",adsReady?"OK":"FEHLER",(unsigned long)adsErrorCount,(unsigned long)adsRecoveryCount,(unsigned long)adsGoodPolls,sensor[0].volts,sensor[1].volts,sensor[2].volts);
