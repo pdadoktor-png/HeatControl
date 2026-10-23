@@ -1673,7 +1673,32 @@ prefs.putFloat("slope",slope);
    prefs.putUInt("minOff",minBurnerOffSeconds);
 server.send(200,"application/json",json());
 });
- server.on("/api/sim",HTTP_POST,[]{server.send(410,"text/plain","Regelung startet automatisch");});
+ server.on("/api/sim",HTTP_POST,[]{
+ String cmd=server.arg("cmd");
+ if(cmd=="pause" || cmd=="stop"){
+   simulationRunning=false;
+   setVirtualBurner(false);
+   pumpDemand=false;
+   manualBurner=false;manualPump=false;
+   relayBenchStop("Regelung gestoppt");
+   relayTestStop("Regelung gestoppt");
+   relayUpdate();
+   eventLog("FREIGABE","Regelung manuell gestoppt");
+ }else if(cmd=="start"){
+   if(inputMode!=1){server.send(409,"text/plain","Start nur mit realen Sensoren; Software-Simulation ohne Relaisfreigabe");return;}
+   if(!sensor[0].valid || !sensor[1].valid || !sensor[2].valid || !isfinite(boilerTemp) || boilerTemp>=75.0f){
+     server.send(409,"text/plain","Start gesperrt: Sensoren oder Kesselgrenzwert pruefen");return;
+   }
+   if(!clockValid && (scheduleEnabled || holidayEnabled)){
+     server.send(409,"text/plain","Start gesperrt: Uhrzeit fuer Schaltprogramm fehlt");return;
+   }
+   manualBurner=false;manualPump=false;
+   sensorFaultLatched=false;
+   simulationRunning=true;
+   eventLog("FREIGABE","Regelung manuell freigegeben");
+ }else{server.send(400,"text/plain","cmd=start oder pause erwartet");return;}
+ server.send(200,"application/json",json());
+});
  server.on("/api/program",HTTP_GET,[]{server.send(200,"application/json",programJson());});
  server.on("/api/program",HTTP_POST,[]{
 if(!server.hasArg("days")){server.send(400,"text/plain","days fehlt");
