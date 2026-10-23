@@ -1176,10 +1176,20 @@ if(outsideValid && setpointValid){
   lv_obj_set_pos(marker,graphX(outsideTemp)-5,graphY(setpoint)-5);
   lv_obj_set_hidden(marker, false);
 } else lv_obj_set_hidden(marker, true);
+// Display temperatures are held for 20 seconds; control uses fresh filtered readings.
+static uint32_t lastVisibleTempMs=0;
+static float visibleTemp[3]={NAN,NAN,NAN};
+if(lastVisibleTempMs==0 || millis()-lastVisibleTempMs>=20000UL ||
+   (isfinite(visibleTemp[0]) && !outsideValid) ||
+   (isfinite(visibleTemp[1]) && !isfinite(roomTemp)) ||
+   (isfinite(visibleTemp[2]) && !boilerValid)){
+  visibleTemp[0]=outsideTemp;visibleTemp[1]=roomTemp;visibleTemp[2]=boilerTemp;
+  lastVisibleTempMs=millis();
+}
 char aText[24],rText[24],bText[24],sText[24];
-if(outsideValid) snprintf(aText,sizeof(aText),"%.1f C",outsideTemp); else snprintf(aText,sizeof(aText),"--- C");
-if(isfinite(roomTemp)) snprintf(rText,sizeof(rText),"%.1f C",roomTemp); else snprintf(rText,sizeof(rText),"--- C");
-if(boilerValid) snprintf(bText,sizeof(bText),"%.1f C",boilerTemp); else snprintf(bText,sizeof(bText),"--- C");
+if(isfinite(visibleTemp[0])) snprintf(aText,sizeof(aText),"%.1f C",visibleTemp[0]); else snprintf(aText,sizeof(aText),"--- C");
+if(isfinite(visibleTemp[1])) snprintf(rText,sizeof(rText),"%.1f C",visibleTemp[1]); else snprintf(rText,sizeof(rText),"--- C");
+if(isfinite(visibleTemp[2])) snprintf(bText,sizeof(bText),"%.1f C",visibleTemp[2]); else snprintf(bText,sizeof(bText),"--- C");
 if(setpointValid) snprintf(sText,sizeof(sText),"%.1f C",setpoint); else snprintf(sText,sizeof(sText),"--- C");
 snprintf(buffer,sizeof(buffer),"Aussen %s  ->  Soll %s",aText,sText);
 lv_label_set_text(graphLabel,buffer);
