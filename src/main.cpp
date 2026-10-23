@@ -345,10 +345,10 @@ float startsPerHour=hours>=0.25f?starts/hours:0.0f;
 bool sufficient=n>=4 && duration>=900;
 String advice="Zu wenig Messdaten: mindestens vier Messpunkte und 15 Minuten benoetigt.";
   if(sufficient){
-if(startsPerHour>6.0f)advice="Viele virtuelle Brennerstarts. Hysterese und Mindestlaufzeit pruefen; keine automatische Aenderung.";
-else if(duty>90.0f)advice="Hoher virtueller Brenneranteil. Simulation und Heizkurven-Sollwert pruefen.";
-else if(startsPerHour<1.0f)advice="Wenig virtuelle Brennerstarts im betrachteten Fenster.";
-else advice="Keine auffaellige Taktrate in den vorliegenden Simulationsdaten.";
+if(startsPerHour>6.0f)advice="Mehr als sechs Brenneranforderungen pro Stunde: Hysterese und Mindestlaufzeit pruefen. Vorschlag: Hysterese um 0,5 Grad erhoehen und Verlauf erneut vergleichen. Keine automatische Aenderung.";
+else if(duty>90.0f)advice="Brenneranforderung ueber 90 Prozent der Zeit: Kesselsollwert, Heizkurve und Sensorwerte pruefen. Bei zu kaltem Raum Steilheit vorsichtig erhoehen; ohne Raumabweichung keine pauschale Aenderung.";
+else if(startsPerHour<1.0f)advice="Weniger als eine Brenneranforderung pro Stunde: kein Hinweis auf haeufiges Takten. Raumtemperatur gegen Sollwert beobachten.";
+else advice="Keine auffaellige Anforderungsrate. Heizkurve nur bei wiederholter Abweichung der Raumtemperatur vom Sollwert anpassen.";
   }
   String j="{\"simulationOnly\":true,\"period\":\"letzte "+String(periodHours==168?"7 Tage":"24 Stunden")+"\",\"samples\":"+String(n)+
     ",\"requestedHours\":"+String(periodHours)+",\"windowSeconds\":"+String(duration)+",\"burnerStarts\":"+String(starts)+
