@@ -80,8 +80,9 @@ bool automatic=true, burnerDemand=false;
 bool manualMode=false, manualBurner=false, manualPump=false;
 bool pumpDemand=false;
 // Vor historySample() deklariert
-// 0: Software-Simulation, 1: Poti-Test (ADS1115), 2: NTC (gesperrt bis Kalibrierung).
+// 0: Software-Temperatursimulation (Relais strikt gesperrt), 1: reale NTC am ADS1115.
 uint8_t inputMode=1;
+float virtualOutside=10.0f,virtualRoom=21.0f,virtualBoiler=45.0f;
 static constexpr float POT_MAX_R=20000.0f;
 bool simulationRunning=true; // Automatischer Start nur am Niedervolt-Pruefstand.
 static bool sensorFaultLatched=false; // Hand-Brenner bleibt nach Sensor-/Grenzwertfehler AUS.
@@ -553,10 +554,10 @@ r.valid=isfinite(r.temp)&&r.ohms>=100.0f&&r.ohms<=POT_MAX_R*1.05f;
 adsGoodPolls++;
 }
 bool applyPotiTemperatures(){
-  outsideTemp = sensor[0].valid ? sensor[0].temp : NAN;
-  roomTemp = sensor[1].valid ? sensor[1].temp : NAN;
-  boilerTemp = sensor[2].valid ? sensor[2].temp : NAN;
-  return sensor[0].valid && sensor[2].valid;
+  outsideTemp = inputMode==0 ? virtualOutside : (sensor[0].valid ? sensor[0].temp : NAN);
+  roomTemp = inputMode==0 ? virtualRoom : (sensor[1].valid ? sensor[1].temp : NAN);
+  boilerTemp = inputMode==0 ? virtualBoiler : (sensor[2].valid ? sensor[2].temp : NAN);
+  return inputMode==0 || (sensor[0].valid && sensor[2].valid);
 }
 String sensorJson(){
 String out="{\"connected\":"+String(adsReady?"true":"false")+",\"calibrated\":false,\"i2cErrors\":"+String(adsErrorCount)+",\"recoveries\":"+String(adsRecoveryCount)+",\"goodPolls\":"+String(adsGoodPolls)+",\"channels\":[";
@@ -750,7 +751,7 @@ static void touchManualMode(lv_event_t *e){
 static void touchManualOutputs(lv_event_t *e){
  if(!manualMode)return;
  intptr_t action=(intptr_t)lv_event_get_user_data(e);
- manualBurner=action==1 && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;manualPump=action==1 || action==2;
+ manualBurner=action==1 && sensor[0].valid && (inputMode==0 || sensor[2].valid) && isfinite(boilerTemp) && boilerTemp<75.0f;manualPump=action==1 || action==2;
  if(manualBurner && sensorFaultLatched){sensorFaultLatched=false;eventLog("STOERUNG","Hand-Brenner nach gueltigen Sensorwerten erneut freigegeben");}
  eventLog("BEDIENUNG",String("Touch: Brenner ")+(manualBurner?"EIN":"AUS")+", Pumpe "+(manualPump?"EIN":"AUS"));
  refreshDisplay();
@@ -1390,7 +1391,7 @@ eventLog("RELAIS","Niedervolt-Pruefstand: Ausgaenge nach I2C-Wiedererkennung fre
 Serial.println("PCF8574: nachtraeglich erkannt, Pruefstand-Ausgaenge freigegeben");
   }
 uint8_t wanted=PCF_OFF;
-  if(relayBenchAuto && !relayOtaInProgress && simulationRunning && (automatic || manualMode) && pcfOutputHealthy && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f){
+  if(relayBenchAuto && !relayOtaInProgress && simulationRunning && (automatic || manualMode) && pcfOutputHealthy && inputMode==1 && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f){
 if(burnerDemand && (!manualMode || (!sensorFaultLatched && manualBurner)))wanted &= (uint8_t)~0x01;
 if(pumpDemand)wanted &= (uint8_t)~0x02;
   }
@@ -1468,7 +1469,11 @@ historyInit();
 eventLoadFromFlash();
 eventLog("SYSTEM","Neustart; PCF8574 wird initialisiert; Niedervolt-Pruefstand");
 initProgram();
- inputMode=1; // Ausschliesslich ADS1115/NTC
+ inputMode=prefs.getUChar("inputMode",1)==0?0:1;
+ virtualOutside=prefs.getFloat("simOutside",10.f);
+ virtualRoom=prefs.getFloat("simRoom",21.f);
+ virtualBoiler=prefs.getFloat("simBoiler",45.f);
+ if(inputMode==0)simulationRunning=false; // Kein automatischer Start im Simulationsmodus
 setenv("TZ",tzRule,1);
  tzset();
 slope=constrain(prefs.getFloat("slope",1.2f),0.2f,3.f);
@@ -1584,7 +1589,7 @@ server.on("/api/relay",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store")
 server.send(400,"text/plain","pin=0 oder pin=1 erforderlich");
      return;
    }
-   if(!relayTestStart((uint8_t)server.arg("pin").toInt())){
+   if(inputMode==0 || !relayTestStart((uint8_t)server.arg("pin").toInt())){
 server.send(503,"text/plain","PCF8574 nicht bereit");
      return;
    }
@@ -1592,7 +1597,7 @@ server.send(200,"application/json",relayDiagnosticJson());
 });
 server.on("/api/relay/off",HTTP_POST,[]{relayBenchStop("Manuell AUS");relayTestStop("Manuell AUS");server.send(200,"application/json",relayDiagnosticJson());});
  server.on("/api/relay/bench/start",HTTP_POST,[]{
-if(!relayBenchStart()){server.send(409,"text/plain","Nur bei laufender Simulation, Automatik und erkanntem PCF8574 moeglich");
+if(inputMode==0 || !relayBenchStart()){server.send(409,"text/plain","Nur bei laufender Simulation, Automatik und erkanntem PCF8574 moeglich");
    return;
    }
 server.send(200,"application/json",relayDiagnosticJson());
@@ -1602,7 +1607,7 @@ server.send(200,"text/html; charset=utf-8",R"PAGE(<!doctype html><html lang="de"
 });
  server.on("/api/inputmode",HTTP_POST,[]{
 int mode=server.arg("mode").toInt();
-if(mode!=1){server.send(400,"text/plain","Unbekannte Betriebsart");
+if(mode!=0 && mode!=1){server.send(400,"text/plain","Unbekannte Betriebsart");
    return;
    }
 inputMode=(uint8_t)mode;
@@ -1626,16 +1631,17 @@ server.send(200,"application/json",json());
 String mode=server.arg("mode");
 if(mode=="auto"){manualMode=false;manualBurner=false;manualPump=false;automatic=true;setVirtualBurner(false);pumpDemand=false;}
 else if(mode=="manual"){manualMode=true;automatic=false;manualBurner=false;manualPump=false;setVirtualBurner(false);pumpDemand=false;}
-else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1" && sensor[0].valid && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;
+else if(mode=="set" && manualMode){manualBurner=server.arg("burner")=="1" && (inputMode==0 || sensor[0].valid) && sensor[2].valid && isfinite(boilerTemp) && boilerTemp<75.0f;
 if(manualBurner && sensorFaultLatched){sensorFaultLatched=false;eventLog("STOERUNG","Hand-Brenner nach gueltigen Sensorwerten erneut freigegeben");}manualPump=server.arg("pump")=="1";if(manualBurner)manualPump=true;}
 else {server.send(400,"text/plain","Ungueltiger Handbefehl");return;}
 eventLog("BETRIEB",String("Web: ")+(manualMode?"Handbetrieb":"Automatik")+", Brenner "+(manualBurner?"EIN":"AUS")+", Pumpe "+(manualPump?"EIN":"AUS"));
 server.send(200,"application/json",json());
 });
 server.on("/api/config",HTTP_POST,[]{
-if(server.hasArg("outside"))outsideTemp=constrain(server.arg("outside").toFloat(),-30.f,45.f);
-if(server.hasArg("room"))roomTemp=constrain(server.arg("room").toFloat(),0.f,45.f);
-if(server.hasArg("boiler"))boilerTemp=constrain(server.arg("boiler").toFloat(),0.f,110.f);
+if(inputMode==0 && server.hasArg("outside")){virtualOutside=constrain(server.arg("outside").toFloat(),-30.f,45.f);prefs.putFloat("simOutside",virtualOutside);}
+if(inputMode==0 && server.hasArg("room")){virtualRoom=constrain(server.arg("room").toFloat(),0.f,45.f);prefs.putFloat("simRoom",virtualRoom);}
+if(inputMode==0 && server.hasArg("boiler")){virtualBoiler=constrain(server.arg("boiler").toFloat(),0.f,110.f);prefs.putFloat("simBoiler",virtualBoiler);}
+applyPotiTemperatures();
 if(server.hasArg("slope"))slope=constrain(server.arg("slope").toFloat(),0.2f,3.f);
 if(server.hasArg("hysteresis"))hysteresis=constrain(server.arg("hysteresis").toFloat(),2.f,15.f);
 if(server.hasArg("minBurnerOn"))minBurnerOnSeconds=constrain(server.arg("minBurnerOn").toInt(),0,600);
@@ -1760,7 +1766,7 @@ if(millis()-lastTick>=1000){lastTick=millis();
  evaluateProgram();
  float set=desiredBoiler();
 bool previousDemand=burnerDemand;
-   bool sensorsOk=sensor[0].valid && sensor[2].valid;
+   bool sensorsOk=inputMode==0 || (sensor[0].valid && sensor[2].valid);
 bool permitted=automatic && !manualMode && simulationRunning && (clockValid || (!scheduleEnabled && !holidayEnabled)) && sensorsOk;
 if(manualMode){
 bool safe=simulationRunning && sensorsOk && isfinite(boilerTemp) && boilerTemp<75.0f;
