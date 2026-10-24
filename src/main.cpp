@@ -17,6 +17,7 @@
 #include <lvgl.h>
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
+#include "RoomSource.h"
 
 // HeatControl v0.5.9.2 | Build 0001: Strukturierung des Quellcodes, unveraenderte Regelungslogik.
 // Basis: v0.5.9, Simulation mit Niedervolt-Pruefstand-Automatik.
@@ -61,6 +62,7 @@ ArduinoOTA.handle();
 }
 WebServer server(80);
 Preferences prefs;
+RoomSource roomSource;
 float outsideTemp=NAN, roomTemp=NAN, boilerTemp=NAN;
 float slope=1.2f, targetRoom=21, hysteresis=5;
 uint16_t minBurnerOnSeconds=30, minBurnerOffSeconds=20;
@@ -562,7 +564,7 @@ adsGoodPolls++;
 }
 bool applyPotiTemperatures(){
   outsideTemp = inputMode==0 ? virtualOutside : (sensor[0].valid ? sensor[0].temp : NAN);
-  roomTemp = inputMode==0 ? virtualRoom : (sensor[1].valid ? sensor[1].temp : NAN);
+  roomTemp = inputMode==0 ? virtualRoom : roomSource.selected(sensor[1].valid ? sensor[1].temp : NAN);
   boilerTemp = inputMode==0 ? virtualBoiler : (sensor[2].valid ? sensor[2].temp : NAN);
   return inputMode==0 || (sensor[0].valid && sensor[2].valid);
 }
@@ -1496,6 +1498,7 @@ Serial.begin(115200);
  delay(300);
  Serial.println("HeatControl v" HEATCONTROL_VERSION " | Build " HEATCONTROL_BUILD_NUMBER " | Git " HEATCONTROL_GIT_SHA " – SIMULATION / RELAIS-PRUEFSTAND");
 prefs.begin("heatcontrol",false);
+roomSource.begin(prefs);
  burnerStarts=prefs.getUInt("burnStarts",0);
  burnerSeconds=prefs.getUInt("burnSecs",0);
  pumpSeconds=prefs.getUInt("pumpSecs",0);
@@ -1535,6 +1538,21 @@ configTzTime(tzRule,"pool.ntp.org","time.google.com");
 Serial.print("Test-WLAN HeatControl-Test, Browser: http://");
  Serial.println(WiFi.softAPIP());
 server.on("/",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send_P(200,"text/html; charset=utf-8",PAGE);});
+server.on("/api/room-source",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",roomSource.json());});
+server.on("/api/room-source",HTTP_POST,[]{
+  if(!server.hasArg("source") || !server.hasArg("ip")) {server.send(400,"text/plain","source und ip erforderlich");return;}
+  int nextSource=server.arg("source")=="wlan"?1:server.arg("source")=="ntc"?0:-1;
+  if(!roomSource.configure(nextSource,server.arg("ip"))) {server.send(400,"text/plain","Ungueltige Quelle oder IP");return;}
+  eventLog("RAUMQUELLE",String(nextSource?"WLAN ":"NTC ")+roomSource.ip);
+  server.send(200,"application/json",roomSource.json());
+});
+server.on("/raumquelle",HTTP_GET,[]{
+  String page=R"HTML(<!doctype html><html lang="de"><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>HeatControl Raumtemperatur</title><style>body{font:16px system-ui;max-width:520px;margin:30px auto;padding:16px;background:#f4f6f8;color:#172133}main{background:white;padding:24px;border-radius:12px}input,select,button{font:inherit;padding:10px;margin:8px 0;width:100%;box-sizing:border-box}</style><main><h2>Raumtemperaturquelle</h2><form action="/api/room-source" method="post"><label>Quelle</label><select name="source"><option value="ntc" SELECT_NTC>Raum-NTC (ADS1115 A1)</option><option value="wlan" SELECT_WLAN>WLAN-Thermometer</option></select><label>IP-Adresse WLAN-Thermometer</label><input name="ip" required value="IP_VALUE"><button>Speichern</button></form><p>WLAN-Ausfall: Raumwert ungueltig, keine automatische Umschaltung auf NTC.</p><p><a href="/">Zurueck zur Uebersicht</a></p></main></html>)HTML";
+  page.replace("SELECT_NTC",roomSource.source==RoomSource::NTC?"selected":"");
+  page.replace("SELECT_WLAN",roomSource.source==RoomSource::WLAN?"selected":"");
+  page.replace("IP_VALUE",roomSource.ip);
+  server.send(200,"text/html; charset=utf-8",page);
+});
 server.on("/api/sensors",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",sensorJson());});
 server.on("/api/status",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",json());});
 server.on("/api/optimization",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",optimizationJson());});
@@ -1806,6 +1824,7 @@ relaySerial();
 relayUpdate();
 server.handleClient();
 maintainOTA();
+roomSource.poll();
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
  pollSensors();
  bool sensorValuesOk=applyPotiTemperatures();
@@ -1831,7 +1850,7 @@ if(millis()-lastTick>=1000){lastTick=millis();
  evaluateProgram();
  float set=desiredBoiler();
 bool previousDemand=burnerDemand;
-   bool sensorsOk=inputMode==0 || (sensor[0].valid && sensor[2].valid);
+   bool sensorsOk=inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(roomTemp));
 bool permitted=automatic && !manualMode && simulationRunning && (clockValid || (!scheduleEnabled && !holidayEnabled)) && sensorsOk;
 if(manualMode){
 bool safe=simulationRunning && sensorsOk && isfinite(boilerTemp) && boilerTemp<75.0f;
