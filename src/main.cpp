@@ -598,6 +598,17 @@ if(p.enabled && p.from<p.to && minute>=p.from && minute<p.to)return true;
   }
 return false;
 }
+int activeSchedulePhase(){
+ if(!scheduleEnabled || holidayActive)return -1;
+ struct tm t{};
+ if(!clockNow(t))return -1;
+ int day=dayIndex(t),minute=minuteNow(t);
+ for(int i=0;i<3;i++){
+  const Phase &p=phases[day][i];
+  if(p.enabled && p.from<p.to && minute>=p.from && minute<p.to)return i;
+ }
+ return -1;
+}
 void evaluateProgram(){
 struct tm t{};
 bool valid=clockNow(t);
@@ -697,6 +708,11 @@ String json() {
   String s="{\"inputMode\":"+String(inputMode)+",\"potiReady\":"+String(inputMode==1 && sensor[0].valid && sensor[2].valid?"true":"false")+",\"outside\":"+jsonFloat(outsideTemp,1)+",\"room\":"+jsonFloat(roomTemp,1)+
     ",\"boiler\":"+jsonFloat(boilerTemp,1)+",\"setpoint\":"+jsonFloat(desiredBoiler(),1)+
     ",\"slope\":"+String(slope,2)+",\"targetRoom\":"+String(targetRoom,1)+
+    ",\"scheduleEnabled\":"+String(scheduleEnabled?"true":"false")+
+    ",\"holidayActive\":"+String(holidayActive?"true":"false")+
+    ",\"clockValid\":"+String(clockValid?"true":"false")+
+    ",\"comfortActive\":"+String(comfortActive?"true":"false")+
+    ",\"activePhase\":"+String(activeSchedulePhase())+
     ",\"automatic\":"+String(automatic?"true":"false")+
     ",\"manualMode\":"+String(manualMode?"true":"false")+
     ",\"pumpDemand\":"+String(pumpDemand?"true":"false")+
