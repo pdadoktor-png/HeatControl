@@ -11,7 +11,7 @@
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
 
-// HeatControl v0.5.9.1: Strukturierung des Quellcodes, unveraenderte Regelungslogik.
+// HeatControl v0.5.9.2: Strukturierung des Quellcodes, unveraenderte Regelungslogik.
 // Basis: v0.5.9, Simulation mit Niedervolt-Pruefstand-Automatik.
 // OTA nur im Heim-WLAN (STA), nie im offenen Test-Access-Point.
 #ifndef HEATCONTROL_OTA_PASSWORD
@@ -1062,7 +1062,7 @@ lv_obj_set_style_bg_color(screen,lv_color_hex(0x142434),0);
 lv_obj_set_style_text_color(screen,lv_color_hex(0xFFFFFF),0);
 // Globaler Fussbereich, auf allen vier LCD-Tabs sichtbar.
 lv_obj_t *brand=lv_label_create(screen);
-lv_label_set_text(brand,"HeatControl by HK 2026  |  Version 0.5.9.1");
+lv_label_set_text(brand,"HeatControl by HK 2026  |  Version 0.5.9.2");
 lv_obj_set_style_text_font(brand,&lv_font_montserrat_14,0);
 lv_obj_set_style_text_color(brand,lv_color_hex(0xC9D8E8),0);
 lv_obj_set_style_bg_color(brand,lv_color_hex(0x142434),0);
@@ -1487,7 +1487,7 @@ else relayCommandLen=0;
 void setup(){
 Serial.begin(115200);
  delay(300);
- Serial.println("HeatControl v0.5.9.1 – SIMULATION / RELAIS-PRUEFSTAND");
+ Serial.println("HeatControl v0.5.9.2 – SIMULATION / RELAIS-PRUEFSTAND");
 prefs.begin("heatcontrol",false);
  burnerStarts=prefs.getUInt("burnStarts",0);
  burnerSeconds=prefs.getUInt("burnSecs",0);
@@ -1611,7 +1611,7 @@ prefs.putFloat("tankLiters",tankLiters);
 server.send(200,"application/json",tankJson());
 });
  server.on("/touch/calibrate",HTTP_GET,[]{
-server.send(200,"text/html; charset=utf-8",R"HTML(<!doctype html><html lang="de"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Touch-Kalibrierung</title><body style="font:18px sans-serif;max-width:650px;margin:30px auto;padding:15px"><h2>HeatControl v0.5.9.1 – Touch</h2><p>PCF8574-Relaisausgaenge sind am Niedervolt-Pruefstand automatisch freigegeben. Nach Start drei Fadenkreuze auf dem Display antippen. Jeder Punkt erfordert ein neues Antippen.</p><form action="/api/touch/start" method="post"><button style="padding:15px">Kalibrierung starten</button></form><p>Wenn die Bedienung schlechter wird:</p><form action="/api/touch/reset" method="post"><button style="padding:15px">Kalibrierung zuruecksetzen</button></form><p><a href="/">Zurueck zu HeatControl</a></p></body></html>)HTML");
+server.send(200,"text/html; charset=utf-8",R"HTML(<!doctype html><html lang="de"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Touch-Kalibrierung</title><body style="font:18px sans-serif;max-width:650px;margin:30px auto;padding:15px"><h2>HeatControl v0.5.9.2 – Touch</h2><p>PCF8574-Relaisausgaenge sind am Niedervolt-Pruefstand automatisch freigegeben. Nach Start drei Fadenkreuze auf dem Display antippen. Jeder Punkt erfordert ein neues Antippen.</p><form action="/api/touch/start" method="post"><button style="padding:15px">Kalibrierung starten</button></form><p>Wenn die Bedienung schlechter wird:</p><form action="/api/touch/reset" method="post"><button style="padding:15px">Kalibrierung zuruecksetzen</button></form><p><a href="/">Zurueck zu HeatControl</a></p></body></html>)HTML");
 });
 server.on("/api/touch/start",HTTP_POST,[]{touchCalRequested=true;server.sendHeader("Location","/touch/calibrate");server.send(303,"text/plain","Kalibrierung gestartet");});
 server.on("/api/touch/reset",HTTP_POST,[]{touchCalResetRequested=true;server.sendHeader("Location","/touch/calibrate");server.send(303,"text/plain","Kalibrierung zurueckgesetzt");});
@@ -1636,7 +1636,7 @@ if(inputMode==0 || !relayBenchStart()){server.send(409,"text/plain","Nur bei lau
 server.send(200,"application/json",relayDiagnosticJson());
 });
  server.on("/relay/test",HTTP_GET,[]{
-server.send(200,"text/html; charset=utf-8",R"PAGE(<!doctype html><html lang="de"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HeatControl Relaispruefstand</title><style>body{background:#142131;color:#f0f3f8;font:18px system-ui;max-width:720px;margin:35px auto;padding:16px}button{padding:15px;margin:6px;background:#284766;color:white;border:1px solid #7792aa;border-radius:8px}pre{white-space:pre-wrap;background:#24354b;padding:14px;border-radius:8px}</style><h2>HeatControl v0.5.9.1 – PCF8574 Niedervolt-Pruefstand</h2><p>Nur fuer getrennten Niedervolt-Testaufbau. Keine Verbindung zur Heizung oder Netzspannung! Jeder Test dauert hoechstens zwei Sekunden. P0 und P1 schalten aktiv LOW.</p><button onclick="pulse(0)">P0 – 2 Sekunden</button><button onclick="pulse(1)">P1 – 2 Sekunden</button><button onclick="off()">Sofort AUS</button><p><button onclick="bench()">Pruefstand-Automatik dauerhaft EIN</button></p><p>Nur bei laufender Simulation und aktivierter Automatik. Nach jedem Neustart automatisch freigegeben; ohne Simulation bleiben P0/P1 AUS. Manuelles AUS bis zum naechsten Neustart.</p><pre id="diag">Lade...</pre><a style="color:#a9d5ff" href="/">Zurueck</a><script>async function post(url,body){try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});if(!r.ok)alert(await r.text());}catch(e){alert(e.message)}refresh()}async function pulse(n){await post('/api/relay/test','pin='+n)}async function off(){await post('/api/relay/off','')}async function bench(){await post('/api/relay/bench/start','')}async function refresh(){try{document.getElementById('diag').textContent=JSON.stringify(await(await fetch('/api/relay',{cache:'no-store'})).json(),null,2)}catch(e){document.getElementById('diag').textContent=e.message}}refresh();setInterval(refresh,600)</script></html>)PAGE");
+server.send(200,"text/html; charset=utf-8",R"PAGE(<!doctype html><html lang="de"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HeatControl Relaispruefstand</title><style>body{background:#142131;color:#f0f3f8;font:18px system-ui;max-width:720px;margin:35px auto;padding:16px}button{padding:15px;margin:6px;background:#284766;color:white;border:1px solid #7792aa;border-radius:8px}pre{white-space:pre-wrap;background:#24354b;padding:14px;border-radius:8px}</style><h2>HeatControl v0.5.9.2 – PCF8574 Niedervolt-Pruefstand</h2><p>Nur fuer getrennten Niedervolt-Testaufbau. Keine Verbindung zur Heizung oder Netzspannung! Jeder Test dauert hoechstens zwei Sekunden. P0 und P1 schalten aktiv LOW.</p><button onclick="pulse(0)">P0 – 2 Sekunden</button><button onclick="pulse(1)">P1 – 2 Sekunden</button><button onclick="off()">Sofort AUS</button><p><button onclick="bench()">Pruefstand-Automatik dauerhaft EIN</button></p><p>Nur bei laufender Simulation und aktivierter Automatik. Nach jedem Neustart automatisch freigegeben; ohne Simulation bleiben P0/P1 AUS. Manuelles AUS bis zum naechsten Neustart.</p><pre id="diag">Lade...</pre><a style="color:#a9d5ff" href="/">Zurueck</a><script>async function post(url,body){try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});if(!r.ok)alert(await r.text());}catch(e){alert(e.message)}refresh()}async function pulse(n){await post('/api/relay/test','pin='+n)}async function off(){await post('/api/relay/off','')}async function bench(){await post('/api/relay/bench/start','')}async function refresh(){try{document.getElementById('diag').textContent=JSON.stringify(await(await fetch('/api/relay',{cache:'no-store'})).json(),null,2)}catch(e){document.getElementById('diag').textContent=e.message}}refresh();setInterval(refresh,600)</script></html>)PAGE");
 });
  server.on("/api/inputmode",HTTP_POST,[]{
 int mode=server.arg("mode").toInt();
