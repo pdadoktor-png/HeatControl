@@ -1579,6 +1579,23 @@ server.on("/api/events.csv",HTTP_GET,[]{eventSendCsv();});
    lastHistoryMs=millis();
    server.send(200,"application/json","{\"ok\":true}");
  });
+// Explicit, one-time initialization only. Never format during boot or OTA.
+server.on("/api/storage/initialize",HTTP_POST,[]{
+  if(historyFS){server.send(409,"application/json",R"({"ok":false,"error":"already_mounted"})");return;}
+  if(!server.hasArg("confirm") || server.arg("confirm")!="INITIALIZE-LITTLEFS"){
+    server.send(403,"application/json",R"({"ok":false,"error":"confirmation_required","confirm":"INITIALIZE-LITTLEFS"})");return;
+  }
+  const esp_partition_t* p=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
+  if(!p || p->address!=0xC90000 || p->size!=0x360000){
+    server.send(409,"application/json",R"({"ok":false,"error":"partition_layout_mismatch"})");return;
+  }
+  // Arduino LittleFS formats only on mount failure when explicitly requested here.
+  bool mounted=LittleFS.begin(true);
+  if(!mounted){server.send(500,"application/json",R"({"ok":false,"error":"initialization_failed"})");return;}
+  historyFS=true;
+  eventLog("STORAGE","LittleFS nach ausdruecklicher Bestaetigung initialisiert");
+  server.send(200,"application/json",R"({"ok":true,"mounted":true,"note":"Previous RAM-only history was not imported"})");
+});
 server.on("/api/storage/diagnostics",HTTP_GET,[]{
   // Read-only diagnostics. Never mount with auto-format or erase flash.
   const esp_partition_t* part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
