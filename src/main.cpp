@@ -1600,20 +1600,20 @@ server.on("/api/storage/diagnostics",HTTP_GET,[]{
 server.on("/api/storage/flash-probe",HTTP_GET,[]{
   // Read-only flash inspection; never erase, write, format, or mount.
   const esp_partition_t* part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
-  if(!part){server.send(404,"application/json","{\\"error\\":\\"partition_not_found\\"}");return;}
+  if(!part){server.send(404,"application/json","{\"error\":\"partition_not_found\"}");return;}
   const uint32_t offsets[]={0,4096,part->size>=4096?part->size-4096:0};
-  String out="{\\"partitionAddress\\":"+String(part->address)+",\\"partitionSize\\":"+String(part->size)+",\\"samples\\":[";
+  String out="{\"partitionAddress\":"+String(part->address)+",\"partitionSize\":"+String(part->size)+",\"samples\":[";
   for(size_t i=0;i<3;i++){
     if(i)out+=",";
     uint8_t data[64]={0};
     esp_err_t err=esp_partition_read(part,offsets[i],data,sizeof(data));
-    out+="{\\"offset\\":"+String(offsets[i])+",\\"readOk\\":"+String(err==ESP_OK?"true":"false");
+    out+="{\"offset\":"+String(offsets[i])+",\"readOk\":"+String(err==ESP_OK?"true":"false");
     if(err==ESP_OK){
       unsigned ff=0,zero=0;
       String hex;hex.reserve(128);
       static const char digits[]="0123456789ABCDEF";
       for(uint8_t b:data){if(b==0xFF)ff++;if(b==0)zero++;hex+=digits[b>>4];hex+=digits[b&15];}
-      out+=",\\"ffBytes\\":"+String(ff)+",\\"zeroBytes\\":"+String(zero)+",\\"hex64\\":\\""+hex+"\\"";
+      out+=",\"ffBytes\":"+String(ff)+",\"zeroBytes\":"+String(zero)+",\"hex64\":\""+hex+"\"";
     }
     out+="}";
   }
