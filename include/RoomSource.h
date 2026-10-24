@@ -38,8 +38,8 @@ class RoomSource {
       JsonDocument doc;
       DeserializationError err=deserializeJson(doc,http.getStream());
       if(!err && doc["valid"].is<bool>() && doc["valid"].as<bool>()
-          && doc["temperature"].is<float>()
-          && doc["sample_age_ms"].is<unsigned long>()) {
+          && doc["temperature"].is<JsonFloat>()
+          && doc["sample_age_ms"].is<uint32_t>()) {
         float t=doc["temperature"].as<float>();
         uint32_t age=doc["sample_age_ms"].as<uint32_t>();
         if(isfinite(t) && t>=-20 && t<=50 && age<=120000) {
