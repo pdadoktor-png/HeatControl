@@ -113,26 +113,6 @@ static constexpr size_t HISTORY_MAX=2016;
 #include "HistorySample.h"
 static HistorySample history[HISTORY_MAX];
 static size_t historyCount=0,historyHead=0;
-// Non-destructive, incremental inspection of the entire filesystem partition.
-static bool flashScanRunning=false,flashScanDone=false;
-static uint32_t flashScanOffset=0,flashScanSize=0,flashScanNonFF=0,flashScanReadErrors=0;
-static uint32_t flashScanFirst[8];
-static uint8_t flashScanFirstCount=0;
-static void flashScanStep(){
-  if(!flashScanRunning)return;
-  const esp_partition_t* p=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
-  if(!p || flashScanOffset>=p->size){flashScanRunning=false;flashScanDone=true;return;}
-  uint8_t buf[4096];
-  size_t n=(p->size-flashScanOffset)<sizeof(buf)?(p->size-flashScanOffset):sizeof(buf);
-  esp_err_t e=esp_partition_read(p,flashScanOffset,buf,n);
-  if(e!=ESP_OK){flashScanReadErrors++;flashScanRunning=false;flashScanDone=true;return;}
-  for(size_t i=0;i<n;i++)if(buf[i]!=0xFF){
-    flashScanNonFF++;
-    if(flashScanFirstCount<8)flashScanFirst[flashScanFirstCount++]=flashScanOffset+i;
-  }
-  flashScanOffset+=n;
-  if(flashScanOffset>=p->size){flashScanRunning=false;flashScanDone=true;}
-}
 static bool historyFS=false;
 static uint32_t pumpSeconds=0;
 static uint32_t lastHistoryMs=0;
@@ -1617,24 +1597,6 @@ server.on("/api/storage/diagnostics",HTTP_GET,[]{
   out+="}";
   server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",out);
 });
-server.on("/api/storage/scan/start",HTTP_GET,[]{
-  const esp_partition_t* p=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
-  if(!p){server.send(404,"application/json",R"({"error":"partition_not_found"})");return;}
-  flashScanSize=p->size;flashScanOffset=0;flashScanNonFF=0;flashScanReadErrors=0;
-  flashScanFirstCount=0;flashScanDone=false;flashScanRunning=true;
-  server.sendHeader("Cache-Control","no-store");
-  server.send(200,"application/json",R"({"started":true,"readOnly":true})");
-});
-server.on("/api/storage/scan/status",HTTP_GET,[]{
-  String out=String(R"({"running":)")+(flashScanRunning?"true":"false")+
-    R"(,"done":)"+(flashScanDone?"true":"false")+
-    R"(,"scannedBytes":)"+String(flashScanOffset)+
-    R"(,"totalBytes":)"+String(flashScanSize)+
-    R"(,"nonFFBytes":)"+String(flashScanNonFF)+
-    R"(,"readErrors":)"+String(flashScanReadErrors)+R"(,"firstNonFFOffsets":[)";
-  for(uint8_t i=0;i<flashScanFirstCount;i++){if(i)out+=",";out+=String(flashScanFirst[i]);}
-  out+="]}";server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",out);
-});
 server.on("/api/storage/flash-probe",HTTP_GET,[]{
   // Read-only flash inspection; never erase, write, format, or mount.
   const esp_partition_t* part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
@@ -1903,7 +1865,6 @@ void loop(){
 relaySerial();
 relayUpdate();
 server.handleClient();
-flashScanStep();
 maintainOTA();
 roomSource.poll();
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
