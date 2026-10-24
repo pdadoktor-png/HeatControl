@@ -1597,6 +1597,38 @@ server.on("/api/storage/diagnostics",HTTP_GET,[]{
   out+="}";
   server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",out);
 });
+// Read-only 1 KiB binary chunks for a full off-device filesystem backup.
+// No filesystem mount, erase, write, or background scan is performed.
+server.on("/api/storage/backup/info",HTTP_GET,[]{
+  const esp_partition_t* p=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
+  if(!p){server.send(404,"application/json",R"({"error":"partition_not_found"})");return;}
+  String out=String(R"({"address":)")+String(p->address)+R"(,"size":)"+String(p->size)+R"(,"chunkSize":1024,"readOnly":true})";
+  server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",out);
+});
+server.on("/api/storage/backup/chunk",HTTP_GET,[]{
+  const esp_partition_t* p=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
+  if(!p){server.send(404,"text/plain","partition not found");return;}
+  String raw=server.arg("offset");
+  if(!server.hasArg("offset") || raw.isEmpty()){
+    server.send(400,"text/plain","missing offset");return;
+  }
+  for(size_t i=0;i<raw.length();i++)if(raw[i]<'0'||raw[i]>'9'){
+    server.send(400,"text/plain","invalid offset");return;
+  }
+  uint32_t offset=(uint32_t)strtoul(raw.c_str(),nullptr,10);
+  if(offset>=p->size || (offset%1024)!=0 || raw.length()>10){
+    server.send(416,"text/plain","offset outside partition or unaligned");return;
+  }
+  uint8_t buf[1024];
+  size_t n=(p->size-offset)<sizeof(buf)?(p->size-offset):sizeof(buf);
+  if(esp_partition_read(p,offset,buf,n)!=ESP_OK){
+    server.send(500,"text/plain","flash read failed");return;
+  }
+  server.sendHeader("Cache-Control","no-store");
+  server.setContentLength(n);
+  server.send(200,"application/octet-stream","");
+  server.sendContent((const char*)buf,n);
+});
 server.on("/api/storage/flash-probe",HTTP_GET,[]{
   // Read-only flash inspection; never erase, write, format, or mount.
   const esp_partition_t* part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
