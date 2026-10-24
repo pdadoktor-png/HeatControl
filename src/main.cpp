@@ -11,6 +11,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <LittleFS.h>
+#include <esp_partition.h>
 #include <time.h>
 #include <math.h>
 #include <esp32_smartdisplay.h>
@@ -1578,6 +1579,24 @@ server.on("/api/events.csv",HTTP_GET,[]{eventSendCsv();});
    lastHistoryMs=millis();
    server.send(200,"application/json","{\"ok\":true}");
  });
+server.on("/api/storage/diagnostics",HTTP_GET,[]{
+  // Read-only diagnostics. Never mount with auto-format or erase flash.
+  const esp_partition_t* part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
+  String out="{\"mounted\":"+String(historyFS?"true":"false");
+  out+=",\"partitionFound\":"+String(part?"true":"false");
+  if(part){out+=",\"partitionAddress\":"+String(part->address)+",\"partitionSize\":"+String(part->size);}
+  if(historyFS){
+    out+=",\"totalBytes\":"+String(LittleFS.totalBytes())+",\"usedBytes\":"+String(LittleFS.usedBytes());
+    for(const char* path : {"/history.csv","/events.csv","/events-old.csv"}){
+      String key=String(path).substring(1);key.replace(".","_");key.replace("-","_");
+      File f=LittleFS.open(path,"r");
+      out+=",\""+key+"Exists\":"+String(f?"true":"false");
+      if(f){out+=",\""+key+"Bytes\":"+String(f.size());f.close();}
+    }
+  }
+  out+="}";
+  server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",out);
+});
 server.on("/api/history/status",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",historyStatusJson());});
 server.on("/api/history",HTTP_GET,[]{historySendJson();});
 server.on("/api/history.csv",HTTP_GET,[]{historyCsv();});
