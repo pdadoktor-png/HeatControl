@@ -1,4 +1,11 @@
 #include <Arduino.h>
+#ifndef HEATCONTROL_GIT_SHA
+#define HEATCONTROL_GIT_SHA "unknown"
+#endif
+#ifndef HEATCONTROL_BUILD_NUMBER
+#define HEATCONTROL_BUILD_NUMBER "0"
+#endif
+#define HEATCONTROL_VERSION "0.5.9.2"
 #include <WiFi.h>
 #include <ArduinoOTA.h>
 #include <WebServer.h>
@@ -705,7 +712,7 @@ String burnerBlockReason(){
  return "Keine Stoerung";
 }
 String json() {
-  String s="{\"inputMode\":"+String(inputMode)+",\"potiReady\":"+String(inputMode==1 && sensor[0].valid && sensor[2].valid?"true":"false")+",\"outside\":"+jsonFloat(outsideTemp,1)+",\"room\":"+jsonFloat(roomTemp,1)+
+  String s="{\"version\":\"" HEATCONTROL_VERSION "\",\"build\":\"" HEATCONTROL_BUILD_NUMBER "\",\"git\":\"" HEATCONTROL_GIT_SHA "\",\"inputMode\":"+String(inputMode)+",\"potiReady\":"+String(inputMode==1 && sensor[0].valid && sensor[2].valid?"true":"false")+",\"outside\":"+jsonFloat(outsideTemp,1)+",\"room\":"+jsonFloat(roomTemp,1)+
     ",\"boiler\":"+jsonFloat(boilerTemp,1)+",\"setpoint\":"+jsonFloat(desiredBoiler(),1)+
     ",\"slope\":"+String(slope,2)+",\"targetRoom\":"+String(targetRoom,1)+
     ",\"scheduleEnabled\":"+String(scheduleEnabled?"true":"false")+
@@ -1062,7 +1069,7 @@ lv_obj_set_style_bg_color(screen,lv_color_hex(0x142434),0);
 lv_obj_set_style_text_color(screen,lv_color_hex(0xFFFFFF),0);
 // Globaler Fussbereich, auf allen vier LCD-Tabs sichtbar.
 lv_obj_t *brand=lv_label_create(screen);
-lv_label_set_text(brand,"HeatControl by HK 2026  |  Version 0.5.9.2 | Build 0001");
+lv_label_set_text(brand,"HeatControl by HK 2026 | Version " HEATCONTROL_VERSION " | Build " HEATCONTROL_BUILD_NUMBER " | Git " HEATCONTROL_GIT_SHA);
 lv_obj_set_style_text_font(brand,&lv_font_montserrat_14,0);
 lv_obj_set_style_text_color(brand,lv_color_hex(0xC9D8E8),0);
 lv_obj_set_style_bg_color(brand,lv_color_hex(0x142434),0);
@@ -1487,7 +1494,7 @@ else relayCommandLen=0;
 void setup(){
 Serial.begin(115200);
  delay(300);
- Serial.println("HeatControl v0.5.9.2 | Build 0001 – SIMULATION / RELAIS-PRUEFSTAND");
+ Serial.println("HeatControl v" HEATCONTROL_VERSION " | Build " HEATCONTROL_BUILD_NUMBER " | Git " HEATCONTROL_GIT_SHA " – SIMULATION / RELAIS-PRUEFSTAND");
 prefs.begin("heatcontrol",false);
  burnerStarts=prefs.getUInt("burnStarts",0);
  burnerSeconds=prefs.getUInt("burnSecs",0);
