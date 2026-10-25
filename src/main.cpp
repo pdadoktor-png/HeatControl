@@ -1596,6 +1596,48 @@ server.on("/api/storage/initialize",HTTP_POST,[]{
   eventLog("STORAGE","LittleFS nach ausdruecklicher Bestaetigung initialisiert");
   server.send(200,"application/json",R"({"ok":true,"mounted":true,"note":"Previous RAM-only history was not imported"})");
 });
+// Exact CSV file export (not the filtered in-memory history API).
+server.on("/api/storage/export",HTTP_GET,[]{
+  if(!historyFS){server.send(503,"text/plain","LittleFS not mounted");return;}
+  String name=server.arg("file");
+  if(name!="history.csv" && name!="events.csv" && name!="events-old.csv"){
+    server.send(400,"text/plain","invalid file");return;
+  }
+  String path="/"+name;
+  File f=LittleFS.open(path,"r");
+  if(!f){server.send(404,"text/plain","file not found");return;}
+  server.sendHeader("Cache-Control","no-store");
+  server.sendHeader("Content-Disposition","attachment; filename="+name);
+  server.streamFile(f,"text/csv");f.close();
+});
+// Upload old CSVs into separate archive files, never overwrite live logs.
+// Each request appends at most 1024 bytes; the offset must match the current size.
+server.on("/api/storage/import-archive",HTTP_POST,[]{
+  if(!historyFS){server.send(503,"text/plain","LittleFS not mounted");return;}
+  String kind=server.arg("file");
+  if(kind!="history" && kind!="events"){
+    server.send(400,"text/plain","invalid file");return;
+  }
+  String raw=server.arg("offset");
+  if(raw.isEmpty()||raw.length()>9){server.send(400,"text/plain","invalid offset");return;}
+  for(size_t i=0;i<raw.length();i++)if(raw[i]<'0'||raw[i]>'9'){
+    server.send(400,"text/plain","invalid offset");return;
+  }
+  String payload=server.arg("data");
+  if(payload.isEmpty()||payload.length()>1024){server.send(413,"text/plain","invalid chunk size");return;}
+  String path="/import-"+kind+".csv";
+  File current=LittleFS.open(path,"r");
+  size_t currentSize=current?current.size():0;
+  if(current)current.close();
+  if((size_t)strtoul(raw.c_str(),nullptr,10)!=currentSize){
+    server.send(409,"text/plain",String("offset mismatch, expected ")+currentSize);return;
+  }
+  File f=LittleFS.open(path,"a");
+  if(!f){server.send(500,"text/plain","archive open failed");return;}
+  size_t written=f.write((const uint8_t*)payload.c_str(),payload.length());f.close();
+  if(written!=payload.length()){server.send(500,"text/plain","archive write failed");return;}
+  server.send(200,"application/json",String(R"({"ok":true,"bytes":)")+String(currentSize+written)+"}");
+});
 server.on("/api/storage/diagnostics",HTTP_GET,[]{
   // Read-only diagnostics. Never mount with auto-format or erase flash.
   const esp_partition_t* part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
