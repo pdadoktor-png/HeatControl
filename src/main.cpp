@@ -1668,6 +1668,22 @@ server.on("/api/storage/restore-check",HTTP_GET,[]{
   out+=",\"liveMergeEnabled\":false,\"reason\":\"10-column archive schema needs mapping to 9-column live format\"}";
   server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",out);
 });
+// Read-only combined archive preview. No live file is ever replaced here.
+server.on("/api/storage/recovery-preview",HTTP_GET,[]{
+  if(!historyFS){server.send(503,"application/json",R"({"ok":false,"error":"littlefs_unmounted"})");return;}
+  String out="{\"ok\":true,\"mode\":\"read_only\",\"files\":{";
+  bool first=true;
+  for(const char *name : {"history.csv","events.csv","import-history.csv","import-events.csv"}){
+    if(!first)out+=",";
+    first=false;
+    File f=LittleFS.open(String("/")+name,"r");
+    out+="\""+String(name)+"\":{\"exists\":"+String(f?"true":"false")+",\"bytes\":"+String(f?f.size():0)+"}";
+    if(f)f.close();
+  }
+  out+="},\"activeFilesUnchanged\":true}";
+  server.sendHeader("Cache-Control","no-store");
+  server.send(200,"application/json",out);
+});
 server.on("/api/storage/diagnostics",HTTP_GET,[]{
   // Read-only diagnostics. Never mount with auto-format or erase flash.
   const esp_partition_t* part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
