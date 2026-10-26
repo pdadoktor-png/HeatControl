@@ -6,7 +6,7 @@
 const char PAGE[] PROGMEM = R"HTML(<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HeatControl</title><style>
 body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin:15px auto;padding:0 12px}section{background:#203247;border-radius:12px;padding:15px;margin:10px 0}input{font-size:16px;max-width:100%;box-sizing:border-box;padding:7px;background:#f8fbff;color:#111}input[type=checkbox]{width:auto}input[type=time]{width:120px}input[type=number]{width:90px}button{padding:10px;background:#e7a94c;border:0;border-radius:8px;font-size:15px;margin:3px;cursor:pointer}nav button{background:#35516b;color:white}nav button.sel{background:#e7a94c;color:#111}.tab{display:none}.tab.sel{display:block}.phase{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #456}label{display:inline-block;margin:5px 8px 5px 0}small{color:#b6c4d3}.warn{color:#ffbe7a}
 .sensor-table-wrap{overflow-x:auto;margin-top:12px}.sensor-table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums;white-space:nowrap}.sensor-table th,.sensor-table td{padding:10px 12px;border-bottom:1px solid #496079;text-align:right}.sensor-table thead th{color:#c8d8e9;background:#17293b;font-size:14px}.sensor-table th:first-child,.sensor-table td:first-child{text-align:left}.sensor-table tbody tr:nth-child(even){background:#253b52}.sensor-summary{line-height:1.6}</style><h2>HeatControl by HK 2026 <small><span id="firmwareBuild">Version 0.5.9.2 | Build wird geladen ...</span></small></h2><p class="warn">TOUCH-KALIBRIERUNG – PCF8574-I2C-Diagnose und Pruefstand-Automatik</p>
-<nav><button onclick="tab('overview')">Übersicht</button><button onclick="tab('curve')">Heizkurve</button><button onclick="tab('pump')">Pumpe</button><button onclick="tab('tank')">Öltank</button><button onclick="tab('stats')">Statistik</button><button onclick="tab('opt');loadOptimization()">Optimierung</button><button onclick="tab('events');loadEvents()">Ereignisse</button><button onclick="tab('sensors')">Sensoren</button><button onclick="tab('schedule')">Schaltuhr</button><button onclick="tab('holiday')">Urlaub</button></nav>
+<nav><button onclick="tab('overview')">Übersicht</button><button onclick="tab('curve')">Heizkurve</button><button onclick="tab('pump')">Pumpe</button><button onclick="tab('tank')">Öltank</button><button onclick="tab('stats')">Statistik</button><button onclick="tab('slope');loadSlopeTest()">Steilheit ermitteln</button><button onclick="tab('opt');loadOptimization()">Optimierung</button><button onclick="tab('events');loadEvents()">Ereignisse</button><button onclick="tab('sensors')">Sensoren</button><button onclick="tab('schedule')">Schaltuhr</button><button onclick="tab('holiday')">Urlaub</button></nav>
 <section id="overview" class="tab sel"><h3>Aktueller Zustand</h3><div style="padding:12px;background:#15283b;border-radius:9px;margin:8px 0"><strong id="regulationStatus">Regelung: Status wird geladen ...</strong><p><button id="simButton" onclick="heatControlSimCommand()">Regelung starten / stoppen</button></p><small>Nur bei sicher getrennten Relaisausgaengen testen. Start kann bei Sensorfehlern oder fehlender Uhrzeit abgelehnt werden.</small></div><div id="state">Lade ...</div><div id="scheduleState" style="padding:8px 0">Schaltuhr: Lade ...</div><h4>Handbetrieb (Niedervolt-Pruefstand)</h4><div id="manualState">Lade ...</div><button onclick="setManualMode('manual')">Handbetrieb</button><button onclick="setManualMode('auto')">Automatik</button><p><button onclick="setManualOutputs(1,1)">Brenner EIN</button><button onclick="setManualOutputs(0,1)">Brenner AUS / Pumpe EIN</button><button onclick="setManualOutputs(0,0)">Alles AUS</button></p><p><small>Nur Testaufbau: Brennerfreigabe bei gueltigen A0/A2 und Kessel unter 75 C. Kein echter Oelbrenner.</small></p><h4>Relais-Diagnose (Niedervolt-Pruefstand)</h4><div id="relayDiag">Lade ...</div></section><p id="feedback" role="status" style="padding:8px 12px;background:#35516b;border-radius:8px">Bereit</p>
 <section id="events" class="tab"><h3>Ereignis- und Fehlerprotokoll</h3><p><small>Echte ADS1115-Messwerte und manuelle Tankbuchungen; Brenner- und Pumpenanforderungen sind Steuerbefehle, keine Rueckmeldung eines realen Brennerlaufs. Maximal 500 aktuelle Ereignisse im Web; CSV mit gespeichertem Verlauf.</small></p><label>Filter <select id="eventFilter" onchange="loadEvents()"><option value="">Alle</option><option>BRENNER</option><option>PUMPE</option><option>FREIGABE</option><option>SIMULATION</option><option>SYSTEM</option><option>OELTANK</option><option>OELLIEFERUNG</option></select></label><button onclick="loadEvents()">Aktualisieren</button><a href="/api/events.csv" style="color:#82d8ff">CSV herunterladen</a> <button onclick="resetEvents()">CSV sichern und Ereignisse löschen</button><p id="eventInfo"></p><div id="eventRows" style="max-height:450px;overflow:auto"></div></section>
 <section id="sensors" class="tab"><h3>Temperatursensoren (ADS1115)</h3><p>NTC-Sensoren: A0 Aussen 5 kOhm, A1 Raum 10 kOhm, A2 Kessel 5 kOhm (Nennwerte bei 25 Grad C). Messwerte werden ueber ca. 20 Sekunden gleitend gemittelt; die Temperaturanzeige der Uebersicht wird alle 20 Sekunden erneuert. Im Sensor-Tab sind aktueller und gemittelter Wert direkt vergleichbar. Kennlinienannahme B=3950 K, noch nicht kalibriert.</p><label>Betriebsart <select id="inputMode"><option value="0">Software-Simulation</option><option value="1">Reale Sensoren</option></select></label><button onclick="saveInputMode()">Betriebsart übernehmen</button><p><small>Reale Sensoren: ADS1115-Messwerte. Software-Simulation: Temperaturen ueber den Tab Heizkurve einstellen; alle physischen Relaisausgaenge bleiben dabei AUS. Beim Wechsel wird die Regelung zunaechst gestoppt. Unabhaengige Sicherheitseinrichtungen bleiben erforderlich.</small></p><div class="sensor-summary"><h4>Raumtemperaturquelle</h4><label>Quelle <select id="roomSourceChoice"><option value="ntc">NTC</option><option value="wlan">WLAN-Thermometer</option></select></label><label>WLAN-IP <input id="roomSourceIp" placeholder="192.168.0.26"></label><button onclick="saveRoomSource()">Speichern</button><p id="roomSourceStatus"></p></div><div id="sensorState">Lade ...</div></section>
@@ -18,6 +18,17 @@ body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin
 <label>Aktueller Bestand (Liter) <input id="tankLiters" type="number" min="0" max="4200" step="1" placeholder="unbekannt"></label><button onclick="setTankLevel()">Bestand speichern</button>
 <p><label>Neue Heizöllieferung (Liter) <input id="tankDelivery" type="number" min="1" max="4200" step="1"></label><button onclick="addTankDelivery()">Lieferung hinzubuchen</button></p>
 <p><small>Lieferung nur buchen, wenn ein Anfangsbestand gespeichert wurde. Die Anzahl der Lieferungen und die letzte Menge werden gespeichert; Lieferungen und Bestandsaenderungen werden im Ereignisprotokoll erfasst.</small></p></section>
+<section id="slope" class="tab"><h3>Steilheit ermitteln</h3>
+<p>Gefuehrter Test: HeatControl darf nach ausdruecklichem Start die Kessel-Solltemperatur alle drei Stunden um hoechstens 1 °C veraendern. Die gesamte Abweichung ist auf ±6 °C begrenzt. Die gespeicherte Steilheit wird nicht geaendert.</p>
+<p class="warn">Nur am Niedervolt-Pruefstand erprobt. Keine Freigabe zum Betrieb an einem realen Oelbrenner. Bei Sensorfehlern oder fehlender Freigabe stoppt der Versuch.</p>
+<div id="slopeTestState">Lade ...</div>
+<button onclick="slopeCommand('start')">Ermitteln starten</button>
+<button onclick="slopeCommand('stop')">Ermitteln stoppen</button>
+<button onclick="loadSlopeTest()">Aktualisieren</button>
+<h4>Passive Auswertung des normalen Heizbetriebs</h4>
+<div id="slopePassiveState">Lade Messwerte ...</div>
+<p><small>Die passive Auswertung ist eine erste Orientierung aus aufgezeichneten Temperaturen. Die Kessel-Isttemperatur ist nicht die Vorlauftemperatur; eine belastbare Steilheit erfordert mehrere stabile Messphasen bei verschiedenen Aussentemperaturen.</small></p>
+</section>
 <section id="stats" class="tab"><h3>Betriebsstatistik – Regelungsanforderungen</h3>
 <p class="warn">Laufzeiten und Starts werden aus den Brenner- und Pumpenanforderungen berechnet, nicht aus einer Rueckmeldung der angeschlossenen Geraete. Ein daraus geschaetzter Oelverbrauch wird nicht vom manuell gefuehrten Tankbestand abgezogen. Zaehler werden alle 5 Minuten gespeichert.</p>
 <div id="statsSummary">Lade Statistik ...</div>
@@ -57,6 +68,39 @@ async function loadOptimization(){
  if(status)status.textContent='Aktualisiert: '+new Date().toLocaleTimeString('de-DE')+(j.sufficientData?' · Auswertung abgeschlossen':' · Noch zu wenig Messdaten');
  }catch(e){$('optSummary').textContent='Analysefehler: '+e.message;if(status)status.textContent='Aktualisierung fehlgeschlagen';}
  finally{if(btn){btn.disabled=false;btn.textContent='Analyse aktualisieren';}}
+}
+async function slopeCommand(cmd){
+ if(cmd==='start'&&!confirm('Ermittlung starten? HeatControl darf die Kessel-Solltemperatur bis ±6 °C selbst veraendern.'))return;
+ try{
+  const r=await fetch('/api/slope-test',{method:'POST',body:new URLSearchParams({cmd})});
+  if(!r.ok)throw Error(await r.text());
+  await loadSlopeTest();
+ }catch(e){feedback('Steilheit: '+e.message)}
+}
+async function loadSlopeTest(){
+ try{
+  const j=await(await fetch('/api/slope-test',{cache:'no-store'})).json();
+  $('slopeTestState').textContent=(j.active?'Ermittlung AKTIV':'Ermittlung AUS')+
+    ' | Korrektur '+j.offset+' °C | Schritte '+j.steps+
+    ' | Dauer '+j.elapsedMinutes+' min | Steilheit gespeichert '+j.savedSlope+
+    ' | Status: '+j.reason+
+    ' | Vorlaeufige Test-Steigung '+(j.suggestedSlope==null?'nicht berechenbar':j.suggestedSlope);
+  const data=await(await fetch('/api/history?hours=168',{cache:'no-store'})).json();
+  const status=await(await fetch('/api/status',{cache:'no-store'})).json();
+  const target=Number(status.targetRoom);
+  const candidates=data.filter(p=>Number.isFinite(p.a)&&Number.isFinite(p.r)&&Number.isFinite(p.b)&&
+    Number.isFinite(target)&&target-p.a>=6&&Math.abs(p.r-target)<=0.5&&p.b>=25&&p.b<=70)
+    .map(p=>({a:p.a,s:(p.b-target)/(target-p.a)})).filter(p=>p.s>=0.2&&p.s<=3);
+  const bins=new Set(candidates.map(p=>Math.floor(p.a/3)));
+  if(candidates.length<12||bins.size<3){
+   $('slopePassiveState').textContent='Noch nicht ausreichend aussagekraeftige Messungen: '+candidates.length+' geeignete Punkte, '+bins.size+' Aussentemperaturbereiche (mindestens 12 Punkte und 3 Bereiche erforderlich).';
+  }else{
+   const values=candidates.map(p=>p.s).sort((a,b)=>a-b);
+   const median=values[Math.floor(values.length/2)];
+   $('slopePassiveState').textContent='Unverbindlicher Orientierungswert: '+median.toFixed(2)+
+    ' | '+values.length+' Messpunkte in '+bins.size+' Aussentemperaturbereichen. Keine automatische Uebernahme; Kessel-Istwerte sind nur Naeherungswerte.';
+  }
+ }catch(e){$('slopeTestState').textContent='Auswertung fehlgeschlagen: '+e.message}
 }
 async function loadStats(){
  try{
