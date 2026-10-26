@@ -694,11 +694,60 @@ out+="]";
 out+="]}";
   return out;
 }
+// Heizkurven-Ermittlung: nur ein fluechtiger, begrenzter Sollwert-Override.
+// Die gespeicherte Steilheit wird niemals automatisch geaendert.
+bool slopeTestActive=false;
+float slopeTestOffset=0.0f;
+float slopeTestStartRoom=NAN;
+float slopeTestStartOutside=NAN;
+uint32_t slopeTestStartedMs=0;
+uint32_t slopeTestLastStepMs=0;
+uint16_t slopeTestSteps=0;
+String slopeTestStopReason="Nicht gestartet";
+static constexpr uint32_t SLOPE_TEST_STEP_MS=3UL*60UL*60UL*1000UL;
+static constexpr float SLOPE_TEST_MAX_OFFSET=6.0f;
+void slopeTestStop(const String &reason){
+ if(slopeTestActive){slopeTestActive=false;slopeTestOffset=0;eventLog("STEILHEIT",String("Ermittlung beendet: ")+reason);}
+ slopeTestStopReason=reason;
+}
+void slopeTestTick(){
+ if(!slopeTestActive)return;
+ if(inputMode!=1 || manualMode || !automatic || !simulationRunning || !clockValid ||
+    !isfinite(roomTemp) || !isfinite(outsideTemp) || !isfinite(boilerTemp) ||
+    !sensor[0].valid || !sensor[2].valid || boilerTemp>=70.0f ||
+    (roomSource.source==RoomSource::WLAN && !roomSource.available())){
+   slopeTestStop("Regelung/Sensoren nicht freigegeben");return;
+ }
+ if(fabsf(outsideTemp-slopeTestStartOutside)>2.0f){
+   slopeTestStop("Aussentemperatur zu stark veraendert");return;
+ }
+ uint32_t now=millis();
+ if((uint32_t)(now-slopeTestLastStepMs)<SLOPE_TEST_STEP_MS)return;
+ // Nur nach mindestens drei Stunden: in 1-K-Schritten zur Raum-Solltemperatur.
+ float error=targetRoom-roomTemp;
+ if(fabsf(error)<0.3f){slopeTestStop("Raumtemperatur stabil; Messpunkt erreicht");return;}
+ float next=slopeTestOffset+(error>0?1.0f:-1.0f);
+ if(fabsf(next)>SLOPE_TEST_MAX_OFFSET){slopeTestStop("Maximale Testabweichung erreicht");return;}
+ slopeTestOffset=next;slopeTestSteps++;slopeTestLastStepMs=now;
+ eventLog("STEILHEIT",String("Kessel-Soll Korrektur ")+String(slopeTestOffset,1)+" K; Raum "+String(roomTemp,1)+" C");
+}
+String slopeTestJson(){
+ float delta=targetRoom-outsideTemp;
+ float candidate=(isfinite(delta)&&delta>5.0f)?slope+slopeTestOffset/delta:NAN;
+ return String("{\"active\":")+(slopeTestActive?"true":"false")+
+ ",\"offset\":"+String(slopeTestOffset,1)+
+ ",\"steps\":"+String(slopeTestSteps)+
+ ",\"elapsedMinutes\":"+String(slopeTestActive?(uint32_t)(millis()-slopeTestStartedMs)/60000UL:0)+
+ ",\"suggestedSlope\":"+(isfinite(candidate)?String(candidate,2):String("null"))+
+ ",\"savedSlope\":"+String(slope,2)+
+ ",\"reason\":\""+slopeTestStopReason+"\"}";
+}
 float desiredBoiler() {
   // Vorlaeufige, begrenzte Test-Heizkurve; spaeter kalibrieren.
 if (!isfinite(outsideTemp)) return NAN;
 float setpoint = targetRoom + slope * (targetRoom-outsideTemp);
-return constrain(setpoint, 25.0f, 75.0f);
+if(slopeTestActive)setpoint+=slopeTestOffset;
+return constrain(setpoint, 25.0f, 70.0f);
 }
 static String jsonFloat(float v, unsigned decimals=1) { return isfinite(v) ? String(v,decimals) : String("null"); }
 String burnerBlockReason(){
@@ -1539,6 +1588,24 @@ configTzTime(tzRule,"pool.ntp.org","time.google.com");
 Serial.print("Test-WLAN HeatControl-Test, Browser: http://");
  Serial.println(WiFi.softAPIP());
 server.on("/",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send_P(200,"text/html; charset=utf-8",PAGE);});
+server.on("/api/slope-test",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",slopeTestJson());});
+server.on("/api/slope-test",HTTP_POST,[]{
+ String cmd=server.arg("cmd");
+ if(cmd=="stop"){slopeTestStop("Manuell beendet");server.send(200,"application/json",slopeTestJson());return;}
+ if(cmd!="start"){server.send(400,"text/plain","cmd=start oder stop");return;}
+ if(inputMode!=1||manualMode||!automatic||!simulationRunning||!clockValid||
+    !isfinite(roomTemp)||!isfinite(outsideTemp)||!isfinite(boilerTemp)||
+    !sensor[0].valid||!sensor[2].valid||boilerTemp>=70.0f||
+    (roomSource.source==RoomSource::WLAN&&!roomSource.available())){
+   server.send(409,"text/plain","Ermittlung gesperrt: Sensoren, Uhr oder Regelung pruefen");return;
+ }
+ slopeTestActive=true;slopeTestOffset=0;slopeTestSteps=0;
+ slopeTestStartedMs=millis();slopeTestLastStepMs=millis();
+ slopeTestStartRoom=roomTemp;slopeTestStartOutside=outsideTemp;
+ slopeTestStopReason="Messung laeuft";
+ eventLog("STEILHEIT","Gefuehrte Ermittlung gestartet; kein automatisches Speichern");
+ server.send(200,"application/json",slopeTestJson());
+});
 server.on("/api/room-source",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",roomSource.json());});
 server.on("/api/room-source",HTTP_POST,[]{
   if(!server.hasArg("source") || !server.hasArg("ip")) {server.send(400,"text/plain","source und ip erforderlich");return;}
@@ -2028,6 +2095,7 @@ lv_timer_handler();
 touchCalService();
 if(millis()-lastTick>=1000){lastTick=millis();
  evaluateProgram();
+ slopeTestTick();
  float set=desiredBoiler();
 bool previousDemand=burnerDemand;
    bool sensorsOk=inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(roomTemp));
