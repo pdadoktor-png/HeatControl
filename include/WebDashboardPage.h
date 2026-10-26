@@ -108,7 +108,25 @@ async function load(){try{let j=await(await fetch('/api/status',{cache:'no-store
 async function loadRelayDiagnostics(){try{const r=await fetch('/api/relay',{cache:'no-store'});const j=await r.json();$('relayDiag').textContent='PCF8574 (0x20): '+(j.present?'ERKANNT':'NICHT ANGESCHLOSSEN')+' | ADS1115: 0x48 | Brenneranforderung: '+(j.burnerDemand?'EIN':'AUS')+' | Pumpenanforderung: '+(j.pumpDemand?'EIN':'AUS')+' | Relais: '+(j.outputsEnabled?'PRUEFSTAND':'GESPERRT')+' | I2C-Fehler: '+j.errors;}catch(e){$('relayDiag').textContent='Diagnose nicht verfuegbar: '+e.message;}}
 let visibleTemperatures=null,visibleTemperaturesAt=0;
 function displayedTemperatures(j){const now=Date.now();if(!visibleTemperatures||now-visibleTemperaturesAt>=20000||[j.outside,j.room,j.boiler].some(v=>v===null||v===undefined||!Number.isFinite(Number(v)))){visibleTemperatures={outside:j.outside,room:j.room,boiler:j.boiler};visibleTemperaturesAt=now;}return visibleTemperatures;}
-async function loadRoomSource(){try{const j=await(await fetch('/api/room-source',{cache:'no-store'})).json();if(document.activeElement!==$('roomSourceChoice'))$('roomSourceChoice').value=j.source;if(document.activeElement!==$('roomSourceIp'))$('roomSourceIp').value=j.ip;$('roomSourceStatus').textContent='WLAN: '+(j.wlanValid?Number(j.wlanTemperature).toFixed(1)+' °C':'nicht verfügbar')+' | Aktiv: '+j.source;}catch(e){$('roomSourceStatus').textContent=e.message}}
+async function loadRoomSource(){
+ try{
+  const r=await fetch('/api/room-source',{cache:'no-store'});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  const j=await r.json();
+  if(document.activeElement!==$('roomSourceChoice'))$('roomSourceChoice').value=j.source;
+  if(document.activeElement!==$('roomSourceIp'))$('roomSourceIp').value=j.ip;
+  const valid=j.wlanValid && Number.isFinite(Number(j.wlanTemperature));
+  const display=valid?Number(j.wlanTemperature).toFixed(1)+' °C':'—';
+  $('roomSourceStatus').textContent='WLAN-Thermometer: '+display+' · '+(valid?'verbunden':'nicht verfügbar')+' · Raumquelle: '+(j.source==='wlan'?'WLAN':'NTC');
+  const row=$('wlanSensorRow');
+  if(row){
+    row.hidden=j.source!=='wlan';
+    $('wlanSensorValue').textContent=display;
+    $('wlanSensorState').textContent=valid?'Gültig':'Keine gültige Messung';
+    $('wlanSensorAge').textContent=j.ageMs==null?'—':(Number(j.ageMs)/1000).toFixed(0)+' s';
+  }
+ }catch(e){$('roomSourceStatus').textContent='WLAN-Abfrage fehlgeschlagen: '+e.message}
+}
 async function saveRoomSource(){if(await post('/api/room-source',{source:$('roomSourceChoice').value,ip:$('roomSourceIp').value.trim()})){await loadRoomSource();await loadSensors();await load()}}
 async function loadSensors(){
  try{
@@ -120,6 +138,7 @@ async function loadSensors(){
     (c.valid
       ?'<td>'+value(c.tempCurrent,1,'°C')+'</td><td><b>'+value(c.tempApprox,1,'°C')+'</b></td><td>'+value(c.volts,3,'V')+'</td><td>'+value(c.ohms,0,'Ω')+'</td>'
       :'<td colspan="4" style="color:#ffb0a9">Sensorfehler / ungültig</td>')+'</tr>').join('');
+  const wlanRow='<tr id="wlanSensorRow" hidden><th scope="row">Raum WLAN</th><td id="wlanSensorValue">—</td><td id="wlanSensorState">—</td><td id="wlanSensorAge">—</td><td>IP siehe oben</td></tr>';
   $('sensorState').innerHTML='<div class="sensor-summary">ADS1115: '+(j.connected?'verbunden':'nicht gefunden')+
     ' · I²C-Fehler: '+j.i2cErrors+' · Wiederherstellungen: '+j.recoveries+'</div>'+
     '<div class="sensor-table-wrap"><table class="sensor-table"><thead><tr><th>Sensor</th><th>Aktuell</th><th>Mittel (20 s)</th><th>Spannung</th><th>Widerstand</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
