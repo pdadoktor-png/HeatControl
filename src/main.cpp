@@ -567,7 +567,7 @@ bool applyPotiTemperatures(){
   outsideTemp = inputMode==0 ? virtualOutside : (sensor[0].valid ? sensor[0].temp : NAN);
   roomTemp = inputMode==0 ? virtualRoom : roomSource.selected(sensor[1].valid ? sensor[1].temp : NAN);
   boilerTemp = inputMode==0 ? virtualBoiler : (sensor[2].valid ? sensor[2].temp : NAN);
-  return inputMode==0 || (sensor[0].valid && sensor[2].valid);
+  return inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(roomTemp));
 }
 String sensorJson(){
 String out="{\"connected\":"+String(adsReady?"true":"false")+",\"calibrated\":false,\"i2cErrors\":"+String(adsErrorCount)+",\"recoveries\":"+String(adsRecoveryCount)+",\"goodPolls\":"+String(adsGoodPolls)+",\"channels\":[";
@@ -1544,6 +1544,7 @@ server.on("/api/room-source",HTTP_POST,[]{
   if(!server.hasArg("source") || !server.hasArg("ip")) {server.send(400,"text/plain","source und ip erforderlich");return;}
   int nextSource=server.arg("source")=="wlan"?1:server.arg("source")=="ntc"?0:-1;
   if(!roomSource.configure(nextSource,server.arg("ip"))) {server.send(400,"text/plain","Ungueltige Quelle oder IP");return;}
+  applyPotiTemperatures();
   eventLog("RAUMQUELLE",String(nextSource?"WLAN ":"NTC ")+roomSource.ip);
   server.send(200,"application/json",roomSource.json());
 });
@@ -1906,7 +1907,7 @@ server.send(200,"application/json",json());
    eventLog("FREIGABE","Regelung manuell gestoppt");
  }else if(cmd=="start"){
    if(inputMode!=1){server.send(409,"text/plain","Start nur mit realen Sensoren; Software-Simulation ohne Relaisfreigabe");return;}
-   if(!sensor[0].valid || !sensor[1].valid || !sensor[2].valid || !isfinite(boilerTemp) || boilerTemp>=75.0f){
+   if(!sensor[0].valid || !isfinite(roomTemp) || !sensor[2].valid || !isfinite(boilerTemp) || boilerTemp>=75.0f){
      server.send(409,"text/plain","Start gesperrt: Sensoren oder Kesselgrenzwert pruefen");return;
    }
    if(!clockValid && (scheduleEnabled || holidayEnabled)){
@@ -2007,7 +2008,7 @@ roomSource.poll();
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
  pollSensors();
  bool sensorValuesOk=applyPotiTemperatures();
- uint8_t faultMask=(!sensor[0].valid?1:0)|(!sensor[1].valid?2:0)|(!sensor[2].valid?4:0);
+ uint8_t faultMask=(!sensor[0].valid?1:0)|(!isfinite(roomTemp)?2:0)|(!sensor[2].valid?4:0);
  if(previousSensorFaultMask==255){
    eventLog("SENSOREN",faultMask==0?"Alle drei Sensoren gueltig":String("Startfehler: ")+((faultMask&1)?"A0 ":"")+((faultMask&2)?"A1 ":"")+((faultMask&4)?"A2":""));
  }else if(faultMask!=previousSensorFaultMask){
