@@ -1600,7 +1600,7 @@ server.on("/api/storage/initialize",HTTP_POST,[]{
 server.on("/api/storage/export",HTTP_GET,[]{
   if(!historyFS){server.send(503,"text/plain","LittleFS not mounted");return;}
   String name=server.arg("file");
-  if(name!="history.csv" && name!="events.csv" && name!="events-old.csv"){
+  if(name!="history.csv" && name!="events.csv" && name!="events-old.csv" && name!="import-history.csv" && name!="import-events.csv"){
     server.send(400,"text/plain","invalid file");return;
   }
   String path="/"+name;
