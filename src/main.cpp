@@ -1638,6 +1638,33 @@ server.on("/api/storage/import-archive",HTTP_POST,[]{
   if(written!=payload.length()){server.send(500,"text/plain","archive write failed");return;}
   server.send(200,"application/json",String(R"({"ok":true,"bytes":)")+String(currentSize+written)+"}");
 });
+// Restore preflight: read-only checks of staged archives. Does not touch live logs.
+server.on("/api/storage/restore-check",HTTP_GET,[]{
+  if(!historyFS){server.send(503,"application/json",R"({"ok":false,"error":"littlefs_unmounted"})");return;}
+  String out="{\"ok\":true,\"liveHistoryBytes\":";
+  File live=LittleFS.open("/history.csv","r");out+=String(live?live.size():0);if(live)live.close();
+  live=LittleFS.open("/events.csv","r");out+=",\"liveEventsBytes\":"+String(live?live.size():0);if(live)live.close();
+  for(const char* kind: {"history","events"}){
+    String path=String("/import-")+kind+".csv";
+    File f=LittleFS.open(path,"r");
+    uint32_t rows=0,invalid=0,nine=0,ten=0,undated=0;
+    if(f){while(f.available()){
+      String line=f.readStringUntil('\\n');line.trim();if(line.isEmpty())continue;
+      int fields=1;for(size_t i=0;i<line.length();i++)if(line[i]==(String(kind)=="events"?';':','))fields++;
+      if(String(kind)=="events" ? fields!=4 : (fields!=9 && fields!=10))invalid++;
+      else {rows++;if(fields==9)nine++;if(fields==10)ten++;
+        unsigned long ts=strtoul(line.c_str(),nullptr,10);if(ts<1577836800UL)undated++;
+      }
+      if((rows+invalid)%50==0)yield();
+    }f.close();}
+    out+=",\""+String(kind)+"\":{\"present\":"+String(LittleFS.exists(path)?"true":"false")+
+      ",\"rows\":"+String(rows)+",\"invalid\":"+String(invalid)+
+      ",\"nineColumns\":"+String(nine)+",\"tenColumns\":"+String(ten)+
+      ",\"withoutTime\":"+String(undated)+"}";
+  }
+  out+=",\"liveMergeEnabled\":false,\"reason\":\"History archive has 10 columns but firmware live history has 9; review schema before merge\"}";
+  server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",out);
+});
 server.on("/api/storage/diagnostics",HTTP_GET,[]{
   // Read-only diagnostics. Never mount with auto-format or erase flash.
   const esp_partition_t* part=esp_partition_find_first(ESP_PARTITION_TYPE_DATA,ESP_PARTITION_SUBTYPE_DATA_SPIFFS,nullptr);
