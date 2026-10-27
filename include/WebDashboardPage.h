@@ -103,12 +103,33 @@ async function loadSlopeTest(){
   }
  }catch(e){$('slopeTestState').textContent='Auswertung fehlgeschlagen: '+e.message}
 }
+let statsCursorData=[];
+function showStatsCursor(event){
+ const data=statsCursorData,svg=$('statsSvg');
+ if(!data.length)return;
+ const rect=svg.getBoundingClientRect();
+ if(!rect.width)return;
+ const x=(event.clientX-rect.left)*700/rect.width;
+ const i=Math.max(0,Math.min(data.length-1,Math.round((x-45)/639*Math.max(1,data.length-1))));
+ const p=data[i],cx=45+i/Math.max(1,data.length-1)*639;
+ const fmt=v=>Number.isFinite(Number(v))?Number(v).toFixed(1)+' °C':'–';
+ const when=p.t?new Date(p.t*1000).toLocaleString('de-DE'):'Laufzeit '+Math.round(p.u/60)+' min';
+ $('statsCursorReadout').textContent=when+' | Außen '+fmt(p.a)+' | Raum '+fmt(p.r)+' | Kessel '+fmt(p.b);
+ const y=v=>20+(70-v)/90*250;
+ let h='<line x1="'+cx+'" x2="'+cx+'" y1="20" y2="270" stroke="white" stroke-dasharray="4 3"/>';
+ for(const [key,color] of [['a','#56c8ff'],['r','#69df94'],['b','#ffb454']]){
+  if(Number.isFinite(Number(p[key])))h+='<circle cx="'+cx+'" cy="'+y(p[key])+'" r="5" fill="'+color+'" stroke="white"/>';
+ }
+ const layer=$('statsCursorLayer');if(layer)layer.innerHTML=h;
+}
+function clearStatsCursor(){const layer=$('statsCursorLayer');if(layer)layer.innerHTML='';}
 async function loadStats(){
  try{
   const j=await(await fetch('/api/history/status',{cache:'no-store'})).json();
   $('statsSummary').textContent=`Speicher: ${j.storage} | Punkte: ${j.samples} | Brennerstarts (Anforderung): ${j.burnerStarts} | Brennerlaufzeit: ${(j.burnerSeconds/3600).toFixed(2)} h | Pumpenlaufzeit: ${(j.pumpSeconds/3600).toFixed(2)} h | Öl rechnerisch: ${j.estimatedLiters.toFixed(2)} L | Schreibfehler: ${j.writeErrors}`;
   if(document.activeElement!==$('oilRateInput'))$('oilRateInput').value=j.oilRate;
   const data=await(await fetch('/api/history?hours='+$('statsHours').value,{cache:'no-store'})).json();
+  statsCursorData=data;
   const svg=$('statsSvg'), W=700,H=310,L=45,R=16,T=20,B=40;
   const x=i=>L+(i/Math.max(1,data.length-1))*(W-L-R), y=t=>T+(70-t)/90*(H-T-B);
   let out='';for(let t=-20;t<=70;t+=10)out+=`<line x1="${L}" y1="${y(t)}" x2="${W-R}" y2="${y(t)}" stroke="#3a4e61"/><text x="${L-7}" y="${y(t)+4}" text-anchor="end" fill="#c5d3e0" font-size="12">${t}°</text>`;
@@ -116,7 +137,9 @@ async function loadStats(){
    if(data.length)out+=`<polyline points="${data.map((p,i)=>x(i).toFixed(1)+','+y(p[key]).toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="2"/>`;
   }
   if(data.length>1){const n=data.length;for(let i=0;i<5;i++){const ix=Math.round(i*(n-1)/4),p=data[ix];const stamp=p.t?new Date(p.t*1000).toLocaleString('de-DE',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'+'+Math.round(p.u/60)+'m';out+=`<text x="${x(ix)}" y="${H-10}" text-anchor="middle" fill="#c5d3e0" font-size="11">${stamp}</text>`;}}
-  svg.innerHTML=out;
+  svg.innerHTML=out+'<g id="statsCursorLayer" pointer-events="none"></g>';
+  svg.onpointermove=showStatsCursor;
+  svg.onpointerleave=clearStatsCursor;
   $('statsLegend').textContent=`Außen (blau) · Raum (grün) · Kessel (orange) | ${data.length} Messpunkte`;
  }catch(e){$('statsSummary').textContent='Statistik nicht verfügbar: '+e.message;}
 }
