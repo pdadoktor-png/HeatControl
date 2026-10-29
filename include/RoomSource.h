@@ -71,7 +71,7 @@ class RoomSource {
  private:
   uint32_t consecutiveErrors=0;
   int lastHttpCode=0;
-  void recordFailure(int code){valid=false;lastHttpCode=code;if(consecutiveErrors<UINT32_MAX)consecutiveErrors++;}
+  // Einzelne HTTP-Fehler nicht als Sensorausfall werten: letzten gueltigen\n  // Wert bis zu 120 s weiterverwenden. Erst danach available()==false.\n  void recordFailure(int code){lastHttpCode=code;if(consecutiveErrors<UINT32_MAX)consecutiveErrors++;}
   Preferences* store=nullptr;
   float temperature=NAN;
   bool valid=false;
