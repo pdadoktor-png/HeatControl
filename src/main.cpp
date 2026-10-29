@@ -753,16 +753,25 @@ void slopePointPassiveTick(){
     !isfinite(outsideTemp) || !isfinite(boilerTemp) || !isfinite(targetRoom)){
   slopePassiveReason="Temperaturmessung ungueltig";return;
  }
- if(fabsf(roomTemp-targetRoom)>0.5f){slopePassiveReason="Raumtemperatur mehr als 0,5 C vom Soll entfernt";return;}
+ bool stable=fabsf(roomTemp-targetRoom)<=0.5f && historyCount>=7;
+ if(stable){
+  float lo=roomTemp,hi=roomTemp;
+  for(size_t k=historyCount-7;k<historyCount;k++){
+   float v=historyAt(k).room10/10.0f;
+   if(v<lo)lo=v;
+   if(v>hi)hi=v;
+  }
+  stable=(hi-lo)<=0.3f;
+ }
  if(time(nullptr)<1700000000){slopePassiveReason="Uhrzeit nicht synchronisiert";return;}
  File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
  size_t bytes=f?f.size():0;if(f)f.close();
  if(bytes>=256UL*1024UL){slopePassiveReason="Messpunktdatei voll (256 KB)";return;}
  uint32_t before=slopePointsSaved;
- slopePointSave("PASSIV");
+ slopePointSave(stable?"PASSIV_STABIL":"PASSIV_BEOB");
  if(slopePointsSaved>before){
   slopePassiveLastSavedMs=now?now:1;
-  slopePassiveReason="Messpunkt gespeichert";
+  slopePassiveReason=stable?"Stabiler Messpunkt gespeichert":"Beobachtung gespeichert (nicht fuer Empfehlung)";
  }else{
   slopePassiveReason="Speichern fehlgeschlagen oder ungueltige Daten";
  }
@@ -1661,7 +1670,7 @@ server.on("/api/slope-points/analysis",HTTP_GET,[]{
  if(!historyFS){server.send(503,"application/json","{\"error\":\"LittleFS nicht bereit\"}");return;}
  File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
  if(!f){server.send(200,"application/json","{\"count\":0,\"ranges\":0,\"days\":0,\"median\":null,\"valid\":false}");return;}
- uint32_t first=0,last=0,count=0;
+ uint32_t first=0,last=0,count=0,observations=0;
  uint32_t bins=0;
  // Streaming-Auswertung mit Histogramm: konstanter RAM-Bedarf, kein Laden der ganzen CSV.
  uint32_t histogram[281]={};
@@ -1672,7 +1681,10 @@ server.on("/api/slope-points/analysis",HTTP_GET,[]{
   if(sscanf(line.c_str(),"%lu;%15[^;];%f;%f;%f;%f;%f;%f;%f",
     &ts,mode,&outside,&room,&target,&boiler,&setpoint,&storedSlope,&offset)!=9)continue;
   if(ts<1700000000UL || !isfinite(outside)||!isfinite(room)||!isfinite(target)||
-     !isfinite(setpoint)||fabsf(room-target)>0.5f||target-outside<6.0f)continue;
+     !isfinite(setpoint))continue;
+  if(strcmp(mode,"PASSIV_BEOB")==0){observations++;continue;}
+  if(strcmp(mode,"PASSIV_STABIL")!=0 && strcmp(mode,"PASSIV")!=0)continue;
+  if(fabsf(room-target)>0.5f || target-outside<6.0f)continue;
   float proposed=(setpoint-target)/(target-outside);
   if(!isfinite(proposed)||proposed<0.2f||proposed>3.0f)continue;
   int slot=constrain((int)lroundf((proposed-0.2f)*100.0f),0,280);
@@ -1688,6 +1700,7 @@ server.on("/api/slope-points/analysis",HTTP_GET,[]{
  int ranges=__builtin_popcount(bins);
  bool enough=count>=12&&ranges>=3&&days>=3;
  server.send(200,"application/json",String("{\"count\":")+String(count)+
+   ",\"observations\":"+String(observations)+
    ",\"ranges\":"+String(ranges)+",\"days\":"+String(days)+
    ",\"first\":"+String(first)+",\"last\":"+String(last)+
    ",\"median\":"+(isfinite(median)?String(median,2):String("null"))+
