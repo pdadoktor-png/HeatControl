@@ -26,7 +26,7 @@ body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin
 <button onclick="slopeCommand('stop')">Ermitteln stoppen</button>
 <button onclick="loadSlopeTest()">Aktualisieren</button>
 <h4>Passive Auswertung des normalen Heizbetriebs</h4>
-<div id="slopePassiveState">Lade Messwerte ...</div>
+<div id="slopePassiveState">Lade Messwerte ...</div><p><a href="/api/slope-points.csv">Langzeit-Messpunkte als CSV herunterladen</a></p>
 <p><small>Die passive Auswertung ist eine erste Orientierung aus aufgezeichneten Temperaturen. Die Kessel-Isttemperatur ist nicht die Vorlauftemperatur; eine belastbare Steilheit erfordert mehrere stabile Messphasen bei verschiedenen Aussentemperaturen.</small></p>
 </section>
 <section id="stats" class="tab"><h3>Betriebsstatistik – Regelungsanforderungen</h3>
@@ -86,20 +86,15 @@ async function loadSlopeTest(){
     ' | Dauer '+j.elapsedMinutes+' min | Steilheit gespeichert '+j.savedSlope+
     ' | Status: '+j.reason+
     ' | Vorlaeufige Test-Steigung '+(j.suggestedSlope==null?'nicht berechenbar':j.suggestedSlope);
-  const data=await(await fetch('/api/history?hours=168',{cache:'no-store'})).json();
-  const status=await(await fetch('/api/status',{cache:'no-store'})).json();
-  const target=Number(status.targetRoom);
-  const candidates=data.filter(p=>Number.isFinite(p.a)&&Number.isFinite(p.r)&&Number.isFinite(p.b)&&
-    Number.isFinite(target)&&target-p.a>=6&&Math.abs(p.r-target)<=0.5&&p.b>=25&&p.b<=70)
-    .map(p=>({a:p.a,s:(p.b-target)/(target-p.a)})).filter(p=>p.s>=0.2&&p.s<=3);
-  const bins=new Set(candidates.map(p=>Math.floor(p.a/3)));
-  if(candidates.length<12||bins.size<3){
-   $('slopePassiveState').textContent='Noch nicht ausreichend aussagekraeftige Messungen: '+candidates.length+' geeignete Punkte, '+bins.size+' Aussentemperaturbereiche (mindestens 12 Punkte und 3 Bereiche erforderlich).';
+  const a=await(await fetch('/api/slope-points/analysis',{cache:'no-store'})).json();
+  if(a.error)throw Error(a.error);
+  if(!a.valid){
+   $('slopePassiveState').textContent='Langzeitauswertung: '+a.count+' geeignete Punkte, '+a.ranges+
+    ' Außentemperaturbereiche, '+a.days+' Kalendertage. Für eine Empfehlung mindestens 12 Punkte, 3 Temperaturbereiche und 3 Tage erforderlich.';
   }else{
-   const values=candidates.map(p=>p.s).sort((a,b)=>a-b);
-   const median=values[Math.floor(values.length/2)];
-   $('slopePassiveState').textContent='Unverbindlicher Orientierungswert: '+median.toFixed(2)+
-    ' | '+values.length+' Messpunkte in '+bins.size+' Aussentemperaturbereichen. Keine automatische Uebernahme; Kessel-Istwerte sind nur Naeherungswerte.';
+   $('slopePassiveState').textContent='Langfristiger Orientierungswert: '+Number(a.median).toFixed(2)+
+    ' | '+a.count+' Messpunkte, '+a.ranges+' Außentemperaturbereiche, '+a.days+
+    ' Tage. Nur Näherungswert; keine automatische Übernahme.';
   }
  }catch(e){$('slopeTestState').textContent='Auswertung fehlgeschlagen: '+e.message}
 }
