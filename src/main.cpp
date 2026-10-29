@@ -2237,6 +2237,20 @@ relayInit();
  // PCF8574 erst NACH Display und ADS1115 am gemeinsamen I2C-Bus suchen
 }
 void loop(){
+static uint32_t loopLastStart=0, loopMaxGapMs=0, loopSlowGaps=0, lastDiagEventMs=0;
+const uint32_t loopStart=millis();
+if(loopLastStart!=0){
+  uint32_t gap=(uint32_t)(loopStart-loopLastStart);
+  if(gap>loopMaxGapMs)loopMaxGapMs=gap;
+  if(gap>=2000){
+    loopSlowGaps++;
+    if(lastDiagEventMs==0 || (uint32_t)(loopStart-lastDiagEventMs)>=60000){
+      eventLog("DIAGNOSE",String("Hauptschleife Pause ")+gap+" ms; WLAN-Abfrage zuletzt "+roomSource.lastDurationMs+" ms, max "+roomSource.maxDurationMs+" ms");
+      lastDiagEventMs=loopStart;
+    }
+  }
+}
+loopLastStart=loopStart;
 relaySerial();
 relayUpdate();
 server.handleClient();
