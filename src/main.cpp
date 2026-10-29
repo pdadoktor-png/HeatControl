@@ -1696,7 +1696,7 @@ server.on("/api/slope-points/analysis",HTTP_GET,[]{
   File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
   if(f){
    while(f.available()){
-    String line=f.readStringUntil('\\n');
+    String line=f.readStringUntil('\n');
     unsigned long ts=0;char mode[16]={};
     float outside=0,room=0,target=0,boiler=0,setpoint=0,storedSlope=0,offset=0;
     if(sscanf(line.c_str(),"%lu;%15[^;];%f;%f;%f;%f;%f;%f;%f",
