@@ -567,7 +567,8 @@ bool applyPotiTemperatures(){
   outsideTemp = inputMode==0 ? virtualOutside : (sensor[0].valid ? sensor[0].temp : NAN);
   roomTemp = inputMode==0 ? virtualRoom : roomSource.selected(sensor[1].valid ? sensor[1].temp : NAN);
   boilerTemp = inputMode==0 ? virtualBoiler : (sensor[2].valid ? sensor[2].temp : NAN);
-  return inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(roomTemp));
+  // Der Raumfuehler ist fuer die witterungsgefuehrte Brennerfreigabe optional.
+  return inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(outsideTemp) && isfinite(boilerTemp));
 }
 String sensorJson(){
 String out="{\"connected\":"+String(adsReady?"true":"false")+",\"calibrated\":false,\"i2cErrors\":"+String(adsErrorCount)+",\"recoveries\":"+String(adsRecoveryCount)+",\"goodPolls\":"+String(adsGoodPolls)+",\"channels\":[";
@@ -2098,7 +2099,7 @@ if(millis()-lastTick>=1000){lastTick=millis();
  slopeTestTick();
  float set=desiredBoiler();
 bool previousDemand=burnerDemand;
-   bool sensorsOk=inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(roomTemp));
+   bool sensorsOk=inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(outsideTemp) && isfinite(boilerTemp));
 bool permitted=automatic && !manualMode && simulationRunning && (clockValid || (!scheduleEnabled && !holidayEnabled)) && sensorsOk;
 if(manualMode){
 bool safe=simulationRunning && sensorsOk && isfinite(boilerTemp) && boilerTemp<75.0f;
