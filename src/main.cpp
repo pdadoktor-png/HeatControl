@@ -327,13 +327,17 @@ static String optimizationJson(){
  size_t n=0;
  for(size_t i=0;i<historyCount;i++){
   HistorySample h=historyAt(i);
-  bool recent=clockOk && h.epoch ? (now>=h.epoch && now-h.epoch<=periodSeconds) :
+  // Bei synchronisierter Uhr nur absolute Zeitstempel verwenden.
+  // Ein Zeitstempel 0 darf nicht mit uptime gemischt werden:
+  // das verursachte Zeitfenster von hunderttausenden Stunden.
+  bool recent=clockOk ? (h.epoch>=1700000000UL && now>=h.epoch &&
+    now-h.epoch<=periodSeconds) :
     (up>=h.uptime && up-h.uptime<=periodSeconds);
   if(!recent)continue;
   // Unplausible Sensormesswerte nicht in Temperaturmittel aufnehmen.
   float a=h.outside10/10.0f,r=h.room10/10.0f,k=h.boiler10/10.0f;
   if(a< -40||a>60||r<0||r>45||k<0||k>110)continue;
-  uint32_t stamp=clockOk && h.epoch?h.epoch:h.uptime;
+  uint32_t stamp=clockOk?h.epoch:h.uptime;
   if(!n)first=stamp;
   last=stamp;
   sumA+=a;sumR+=r;sumB+=k;n++;
@@ -353,6 +357,7 @@ static String optimizationJson(){
   prevEpoch=h.epoch;prevUptime=h.uptime;havePrev=true;
  }
  uint32_t duration=n>1 && last>=first?last-first:0;
+ if(duration>periodSeconds)duration=periodSeconds;
  float hours=duration/3600.0f;
  float duty=duration?100.0f*burner/duration:0.0f;
  float startsPerHour=hours>=0.25f?starts/hours:0.0f;
