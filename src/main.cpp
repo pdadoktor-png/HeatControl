@@ -2144,8 +2144,8 @@ server.send(200,"application/json",json());
    eventLog("FREIGABE","Regelung manuell gestoppt");
  }else if(cmd=="start"){
    if(inputMode!=1){server.send(409,"text/plain","Start nur mit realen Sensoren; Software-Simulation ohne Relaisfreigabe");return;}
-   if(!sensor[0].valid || !isfinite(roomTemp) || !sensor[2].valid || !isfinite(boilerTemp) || boilerTemp>=75.0f){
-     server.send(409,"text/plain","Start gesperrt: Sensoren oder Kesselgrenzwert pruefen");return;
+   if(!sensor[0].valid || !isfinite(outsideTemp) || !sensor[2].valid || !isfinite(boilerTemp) || boilerTemp>=75.0f){
+     server.send(409,"text/plain","Start gesperrt: Aussen-/Kesselsensor oder Kesselgrenzwert pruefen");return;
    }
    if(!clockValid && (scheduleEnabled || holidayEnabled)){
      server.send(409,"text/plain","Start gesperrt: Uhrzeit fuer Schaltprogramm fehlt");return;
