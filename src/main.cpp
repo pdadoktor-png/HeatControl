@@ -707,8 +707,42 @@ uint16_t slopeTestSteps=0;
 String slopeTestStopReason="Nicht gestartet";
 static constexpr uint32_t SLOPE_TEST_STEP_MS=3UL*60UL*60UL*1000UL;
 static constexpr float SLOPE_TEST_MAX_OFFSET=6.0f;
+// Langfristige Optimierungs-Messpunkte, unabhaengig von /history.csv.
+// CSV: Unixzeit;Modus;Aussen;Raum;RaumSoll;KesselIst;KesselSoll;Steilheit;Offset
+static constexpr char SLOPE_POINTS_FILE[]="/slope-points.csv";
+uint32_t slopePointsSaved=0,slopePointsErrors=0;
+void slopePointSave(const char *mode){
+ if(!historyFS || !isfinite(outsideTemp)||!isfinite(roomTemp)||!isfinite(boilerTemp)||
+    !isfinite(targetRoom)||!isfinite(slope))return;
+ time_t epoch=time(nullptr);
+ if(epoch<1700000000)return;
+ File f=LittleFS.open(SLOPE_POINTS_FILE,"a");
+ if(!f){slopePointsErrors++;return;}
+ float set=targetRoom+slope*(targetRoom-outsideTemp)+(slopeTestActive?slopeTestOffset:0);
+ size_t n=f.printf("%lu;%s;%.2f;%.2f;%.2f;%.2f;%.2f;%.3f;%.2f\n",
+  (unsigned long)epoch,mode,outsideTemp,roomTemp,targetRoom,boilerTemp,
+  constrain(set,25.0f,70.0f),slope,slopeTestActive?slopeTestOffset:0.0f);
+ f.close();
+ if(n)slopePointsSaved++;else slopePointsErrors++;
+ // 256 KB Obergrenze; bei Erreichen keine weiteren Schreibvorgaenge.
+ // Die vorhandenen Messpunkte werden nicht automatisch geloescht.
+}
+void slopePointPassiveTick(){
+ static uint32_t last=0;
+ uint32_t now=millis();
+ if((uint32_t)(now-last)<30UL*60UL*1000UL)return;
+ last=now;
+ if(slopeTestActive || inputMode!=1 || manualMode || !automatic || !simulationRunning ||
+    !sensor[0].valid || !sensor[2].valid || !isfinite(roomTemp) ||
+    fabsf(roomTemp-targetRoom)>0.5f)return;
+ if(!historyFS)return;
+ File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
+ size_t bytes=f?f.size():0;if(f)f.close();
+ if(bytes>=256UL*1024UL)return;
+ slopePointSave("PASSIV");
+}
 void slopeTestStop(const String &reason){
- if(slopeTestActive){slopeTestActive=false;slopeTestOffset=0;eventLog("STEILHEIT",String("Ermittlung beendet: ")+reason);}
+ if(slopeTestActive){slopePointSave("ENDE");slopeTestActive=false;slopeTestOffset=0;eventLog("STEILHEIT",String("Ermittlung beendet: ")+reason);}
  slopeTestStopReason=reason;
 }
 void slopeTestTick(){
@@ -730,6 +764,7 @@ void slopeTestTick(){
  float next=slopeTestOffset+(error>0?1.0f:-1.0f);
  if(fabsf(next)>SLOPE_TEST_MAX_OFFSET){slopeTestStop("Maximale Testabweichung erreicht");return;}
  slopeTestOffset=next;slopeTestSteps++;slopeTestLastStepMs=now;
+ slopePointSave("SCHRITT");
  eventLog("STEILHEIT",String("Kessel-Soll Korrektur ")+String(slopeTestOffset,1)+" K; Raum "+String(roomTemp,1)+" C");
 }
 String slopeTestJson(){
@@ -1589,6 +1624,19 @@ configTzTime(tzRule,"pool.ntp.org","time.google.com");
 Serial.print("Test-WLAN HeatControl-Test, Browser: http://");
  Serial.println(WiFi.softAPIP());
 server.on("/",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send_P(200,"text/html; charset=utf-8",PAGE);});
+server.on("/api/slope-points.csv",HTTP_GET,[]{
+ if(!historyFS || !LittleFS.exists(SLOPE_POINTS_FILE)){server.send(404,"text/plain","Noch keine Optimierungs-Messpunkte");return;}
+ File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
+ server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-slope-points.csv");
+ server.streamFile(f,"text/csv; charset=utf-8");f.close();
+});
+server.on("/api/slope-points/status",HTTP_GET,[]{
+ size_t bytes=0;
+ if(historyFS){File f=LittleFS.open(SLOPE_POINTS_FILE,"r");if(f){bytes=f.size();f.close();}}
+ server.send(200,"application/json",String("{\"storage\":\"")+(historyFS?"LittleFS":"RAM")+
+ "\",\"bytes\":"+String(bytes)+",\"newPoints\":"+String(slopePointsSaved)+
+ ",\"writeErrors\":"+String(slopePointsErrors)+"}");
+});
 server.on("/api/slope-test",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",slopeTestJson());});
 server.on("/api/slope-test",HTTP_POST,[]{
  String cmd=server.arg("cmd");
@@ -1604,6 +1652,7 @@ server.on("/api/slope-test",HTTP_POST,[]{
  slopeTestStartedMs=millis();slopeTestLastStepMs=millis();
  slopeTestStartRoom=roomTemp;slopeTestStartOutside=outsideTemp;
  slopeTestStopReason="Messung laeuft";
+ slopePointSave("START");
  eventLog("STEILHEIT","Gefuehrte Ermittlung gestartet; kein automatisches Speichern");
  server.send(200,"application/json",slopeTestJson());
 });
@@ -2097,6 +2146,7 @@ touchCalService();
 if(millis()-lastTick>=1000){lastTick=millis();
  evaluateProgram();
  slopeTestTick();
+ slopePointPassiveTick();
  float set=desiredBoiler();
 bool previousDemand=burnerDemand;
    bool sensorsOk=inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(outsideTemp) && isfinite(boilerTemp));
