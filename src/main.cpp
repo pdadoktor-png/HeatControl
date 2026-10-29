@@ -372,17 +372,25 @@ else advice="Keine auffaellige Anforderungsrate. Heizkurve nur bei wiederholter 
 return j;
 }
 
-// Manuelle Oeltank-Buchfuehrung: keine Ableitung aus der Simulation.
+// Tankbilanz: manueller Anfangsbestand/Lieferungen minus geschaetzter Brennerverbrauch.
 static constexpr float TANK_CAPACITY_L=4200.0f;
 float tankLiters=0.0f;
 bool tankLevelKnown=false;
 float tankLastDeliveryL=0.0f;
 uint32_t tankDeliveryCount=0;
+uint32_t tankLastSaveMs=0;
+float tankEstimatedConsumed=0.0f;
+void tankPersist(){
+ if(!tankLevelKnown)return;
+ prefs.putFloat("tankLiters",tankLiters);
+ prefs.putFloat("tankUsed",tankEstimatedConsumed);
+ tankLastSaveMs=millis();
+}
 String tankJson(){
   return String("{\"capacity\":4200,\"levelKnown\":")+(tankLevelKnown?"true":"false")+
     ",\"liters\":"+String(tankLiters,1)+",\"percent\":"+String(tankLevelKnown?tankLiters*100.0f/TANK_CAPACITY_L:0,1)+
     ",\"lastDelivery\":"+String(tankLastDeliveryL,1)+",\"deliveryCount\":"+String(tankDeliveryCount)+
-",\"source\":\"manual\",\"geometry\":\"slightly_bulged_steel\"}";
+",\"source\":\"manual_plus_estimated_burner\",\"estimatedConsumed\":"+String(tankEstimatedConsumed,2)+",\"geometry\":\"slightly_bulged_steel\"}";
 }
 
 // Virtuelle Heizkreispumpe: KEIN GPIO und keine Netzspannungs-Schaltung.
@@ -1594,6 +1602,7 @@ tankLevelKnown=prefs.getBool("tankKnown",false);
 tankLiters=constrain(prefs.getFloat("tankLiters",0),0.0f,TANK_CAPACITY_L);
 tankLastDeliveryL=prefs.getFloat("tankLast",0);
 tankDeliveryCount=prefs.getUInt("tankCount",0);
+tankEstimatedConsumed=max(0.0f,prefs.getFloat("tankUsed",0.0f));
 oilLitersPerHour=constrain(prefs.getFloat("oilRate",2.0f),0.1f,20.f);
 historyInit();
 eventLoadFromFlash();
@@ -1947,6 +1956,7 @@ float previous=tankLiters;
      bool wasKnown=tankLevelKnown;
      tankLiters=liters;
      tankLevelKnown=true;
+     tankEstimatedConsumed=0.0f;
      eventLog("OELTANK",String(wasKnown?"Tankbestand korrigiert: ":"Anfangsbestand erfasst: ")+String(liters,1)+" L"+(wasKnown?String(" (vorher ")+String(previous,1)+" L)":String("")));
    }else if(action=="delivery"){
 if(!tankLevelKnown){server.send(409,"text/plain","Bitte zuerst Anfangsbestand speichern");
@@ -1965,7 +1975,7 @@ prefs.putFloat("tankLast",tankLastDeliveryL);
 }else{server.send(400,"text/plain","Unbekannte Aktion");
    return;
    }
-prefs.putFloat("tankLiters",tankLiters);
+tankPersist();
    prefs.putBool("tankKnown",tankLevelKnown);
 server.send(200,"application/json",tankJson());
 });
@@ -2222,10 +2232,18 @@ if(prevPump!=pumpDemand){eventLog("PUMPE",String("Virtuelle Anforderung ")+(pump
    }
    if(simulationRunning){
 simulationSeconds++;
-if(burnerDemand)burnerSeconds++;
+if(burnerDemand){
+ burnerSeconds++;
+ if(tankLevelKnown){
+  float consumed=oilLitersPerHour/3600.0f;
+  tankLiters=max(0.0f,tankLiters-consumed);
+  tankEstimatedConsumed+=consumed;
+ }
+}
 if(pumpDemand)pumpSeconds++;
 if(burnerDemand && !previousDemand)burnerStarts++;
    }
+if(tankLevelKnown && (uint32_t)(millis()-tankLastSaveMs)>=60000UL)tankPersist();
 if(lastHistoryMs==0 || millis()-lastHistoryMs>=300000UL){lastHistoryMs=millis();
    historySample();
    prefs.putUInt("burnStarts",burnerStarts);
