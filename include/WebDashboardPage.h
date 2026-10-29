@@ -89,11 +89,11 @@ async function loadSlopeTest(){
   const a=await(await fetch('/api/slope-points/analysis',{cache:'no-store'})).json();
   if(a.error)throw Error(a.error);
   if(!a.valid){
-   $('slopePassiveState').textContent='Langzeitauswertung: '+a.count+' geeignete Punkte, '+a.ranges+
+   $('slopePassiveState').textContent='Langzeitauswertung: '+(a.observations||0)+' Beobachtungen, '+a.count+' stabile Punkte, +a.ranges+
     ' Außentemperaturbereiche, '+a.days+' Kalendertage. Für eine Empfehlung mindestens 12 Punkte, 3 Temperaturbereiche und 3 Tage erforderlich.';
   }else{
    $('slopePassiveState').textContent='Langfristiger Orientierungswert: '+Number(a.median).toFixed(2)+
-    ' | '+a.count+' Messpunkte, '+a.ranges+' Außentemperaturbereiche, '+a.days+
+    ' | '+(a.observations||0)+' Beobachtungen, '+a.count+' stabile Messpunkte, +a.ranges+' Außentemperaturbereiche, '+a.days+
     ' Tage. Nur Näherungswert; keine automatische Übernahme.';
   }
  }catch(e){$('slopeTestState').textContent='Auswertung fehlgeschlagen: '+e.message}
