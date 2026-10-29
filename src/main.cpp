@@ -1631,6 +1631,42 @@ server.on("/api/slope-points.csv",HTTP_GET,[]{
  server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-slope-points.csv");
  server.streamFile(f,"text/csv; charset=utf-8");f.close();
 });
+server.on("/api/slope-points/analysis",HTTP_GET,[]{
+ if(!historyFS){server.send(503,"application/json","{\"error\":\"LittleFS nicht bereit\"}");return;}
+ File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
+ if(!f){server.send(200,"application/json","{\"count\":0,\"ranges\":0,\"days\":0,\"median\":null,\"valid\":false}");return;}
+ uint32_t first=0,last=0,count=0;
+ uint32_t bins=0;
+ // Streaming-Auswertung mit Histogramm: konstanter RAM-Bedarf, kein Laden der ganzen CSV.
+ uint32_t histogram[281]={};
+ while(f.available()){
+  String line=f.readStringUntil('\n');
+  unsigned long ts=0;char mode[16]={};
+  float outside=0,room=0,target=0,boiler=0,setpoint=0,storedSlope=0,offset=0;
+  if(sscanf(line.c_str(),"%lu;%15[^;];%f;%f;%f;%f;%f;%f;%f",
+    &ts,mode,&outside,&room,&target,&boiler,&setpoint,&storedSlope,&offset)!=9)continue;
+  if(ts<1700000000UL || !isfinite(outside)||!isfinite(room)||!isfinite(target)||
+     !isfinite(setpoint)||fabsf(room-target)>0.5f||target-outside<6.0f)continue;
+  float proposed=(setpoint-target)/(target-outside);
+  if(!isfinite(proposed)||proposed<0.2f||proposed>3.0f)continue;
+  int slot=constrain((int)lroundf((proposed-0.2f)*100.0f),0,280);
+  histogram[slot]++;count++;
+  if(!first||ts<first)first=ts;if(ts>last)last=ts;
+  int bucket=constrain((int)floorf((outside+30.0f)/3.0f),0,31);
+  bins|=(1UL<<bucket);
+ }
+ f.close();
+ uint32_t seen=0;float median=NAN;
+ for(int i=0;i<281;i++){seen+=histogram[i];if(count && seen>=(count+1)/2){median=0.2f+i*0.01f;break;}}
+ uint32_t days=last>=first?(last-first)/86400UL+1:0;
+ int ranges=__builtin_popcount(bins);
+ bool enough=count>=12&&ranges>=3&&days>=3;
+ server.send(200,"application/json",String("{\"count\":")+String(count)+
+   ",\"ranges\":"+String(ranges)+",\"days\":"+String(days)+
+   ",\"first\":"+String(first)+",\"last\":"+String(last)+
+   ",\"median\":"+(isfinite(median)?String(median,2):String("null"))+
+   ",\"valid\":"+(enough?"true":"false")+"}");
+});
 server.on("/api/slope-points/status",HTTP_GET,[]{
  size_t bytes=0;
  if(historyFS){File f=LittleFS.open(SLOPE_POINTS_FILE,"r");if(f){bytes=f.size();f.close();}}
