@@ -32,7 +32,7 @@ body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin
 <section id="stats" class="tab"><h3>Betriebsstatistik – Regelungsanforderungen</h3>
 <p class="warn">Laufzeiten und Starts werden aus den Brenner- und Pumpenanforderungen berechnet, nicht aus einer Rueckmeldung der angeschlossenen Geraete. Ein daraus geschaetzter Oelverbrauch wird nicht vom manuell gefuehrten Tankbestand abgezogen. Zaehler werden alle 5 Minuten gespeichert.</p>
 <div id="statsSummary">Lade Statistik ...</div>
-<label>Zeitraum <select id="statsHours" onchange="loadStats()"><option value="24">24 Stunden</option><option value="168">7 Tage</option></select></label>
+<label>Zeitraum <select id="statsHours" onchange="loadStats()"><option value="168" selected>7 Tage</option><option value="24">24 Stunden</option></select></label>
 <div id="statsCursorReadout" style="padding:8px;margin:8px 0;background:#1b3044;border-radius:8px">Cursor: Außen – · Raum – · Kessel –</div>
 <svg id="statsSvg" viewBox="0 0 700 310" style="width:100%;height:auto;background:#142335;border-radius:10px" aria-label="Temperaturverlauf"></svg>
 <div id="statsLegend" style="font-size:13px;color:#b6c4d3">Außen · Raum · Kessel</div>
