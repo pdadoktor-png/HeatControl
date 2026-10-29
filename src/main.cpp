@@ -314,63 +314,66 @@ server.sendContent("");
 
 // v0.5.4: Read-only simulation diagnostics; no automatic changes to control settings.
 static String optimizationJson(){
-  // Query parameter is deliberately restricted to the two supported periods.
-const int periodHours=(server.hasArg("hours") && server.arg("hours").toInt()==168)?168:24;
-const uint32_t periodSeconds=(uint32_t)periodHours*3600UL;
-const uint32_t now=(uint32_t)time(nullptr);
-const bool clockOk=now>1700000000UL;
-const uint32_t up=millis()/1000UL;
-uint32_t first=0,last=0,startsFirst=0,startsLast=0,burnFirst=0,burnLast=0,pumpFirst=0,pumpLast=0;
-double sumA=0,sumR=0,sumB=0;
-  size_t n=0;
-  for(size_t i=0;i<historyCount;i++){
-HistorySample h=historyAt(i);
-    bool recent=clockOk && h.epoch ? (now>=h.epoch && now-h.epoch<=periodSeconds) :
-(up>=h.uptime && up-h.uptime<=periodSeconds);
-if(!recent)continue;
-    // Counter reset or reboot means rates cannot be compared reliably.
-    if(n && (h.starts<startsLast || h.burnerSec<burnLast || h.pumpSec<pumpLast)){
-n=0;
-      sumA=sumR=sumB=0;
-    }
-if(!n){first=clockOk && h.epoch?h.epoch:h.uptime;
-    startsFirst=h.starts;
-    burnFirst=h.burnerSec;
-    pumpFirst=h.pumpSec;
-    }
-last=clockOk && h.epoch?h.epoch:h.uptime;
-startsLast=h.starts;
-    burnLast=h.burnerSec;
-    pumpLast=h.pumpSec;
-sumA+=h.outside10/10.0;
-    sumR+=h.room10/10.0;
-    sumB+=h.boiler10/10.0;
-    n++;
+ const int periodHours=(server.hasArg("hours") && server.arg("hours").toInt()==168)?168:24;
+ const uint32_t periodSeconds=(uint32_t)periodHours*3600UL;
+ const uint32_t now=(uint32_t)time(nullptr);
+ const bool clockOk=now>1700000000UL;
+ const uint32_t up=millis()/1000UL;
+ uint32_t first=0,last=0,starts=0,burner=0,pump=0;
+ uint32_t prevStarts=0,prevBurn=0,prevPump=0,prevEpoch=0,prevUptime=0;
+ uint32_t counterSegments=0;
+ bool havePrev=false;
+ double sumA=0,sumR=0,sumB=0;
+ size_t n=0;
+ for(size_t i=0;i<historyCount;i++){
+  HistorySample h=historyAt(i);
+  bool recent=clockOk && h.epoch ? (now>=h.epoch && now-h.epoch<=periodSeconds) :
+    (up>=h.uptime && up-h.uptime<=periodSeconds);
+  if(!recent)continue;
+  // Unplausible Sensormesswerte nicht in Temperaturmittel aufnehmen.
+  float a=h.outside10/10.0f,r=h.room10/10.0f,k=h.boiler10/10.0f;
+  if(a< -40||a>60||r<0||r>45||k<0||k>110)continue;
+  uint32_t stamp=clockOk && h.epoch?h.epoch:h.uptime;
+  if(!n)first=stamp;
+  last=stamp;
+  sumA+=a;sumR+=r;sumB+=k;n++;
+  // Zaehlerdifferenzen nur innerhalb desselben monotonen Abschnitts.
+  // Ein Reset darf nie die bisherige Temperaturhistorie verwerfen.
+  if(havePrev){
+   bool sameSegment=h.starts>=prevStarts && h.burnerSec>=prevBurn &&
+     h.pumpSec>=prevPump && h.uptime>=prevUptime;
+   if(h.epoch && prevEpoch && h.epoch<prevEpoch)sameSegment=false;
+   if(sameSegment){
+    starts+=h.starts-prevStarts;
+    burner+=h.burnerSec-prevBurn;
+    pump+=h.pumpSec-prevPump;
+   }else counterSegments++;
   }
-uint32_t duration=n>1 && last>=first?last-first:0;
-uint32_t starts=n>1?startsLast-startsFirst:0;
-uint32_t burner=n>1?burnLast-burnFirst:0;
-uint32_t pump=n>1?pumpLast-pumpFirst:0;
-float hours=duration/3600.0f;
-float duty=duration?100.0f*burner/duration:0.0f;
-float startsPerHour=hours>=0.25f?starts/hours:0.0f;
-bool sufficient=n>=4 && duration>=900;
-String advice="Zu wenig Messdaten: mindestens vier Messpunkte und 15 Minuten benoetigt.";
-  if(sufficient){
-if(startsPerHour>6.0f)advice="Mehr als sechs Brenneranforderungen pro Stunde: Hysterese und Mindestlaufzeit pruefen. Vorschlag: Hysterese um 0,5 Grad erhoehen und Verlauf erneut vergleichen. Keine automatische Aenderung.";
-else if(duty>90.0f)advice="Brenneranforderung ueber 90 Prozent der Zeit: Kesselsollwert, Heizkurve und Sensorwerte pruefen. Bei zu kaltem Raum Steilheit vorsichtig erhoehen; ohne Raumabweichung keine pauschale Aenderung.";
-else if(startsPerHour<1.0f)advice="Weniger als eine Brenneranforderung pro Stunde: kein Hinweis auf haeufiges Takten. Raumtemperatur gegen Sollwert beobachten.";
-else advice="Keine auffaellige Anforderungsrate. Heizkurve nur bei wiederholter Abweichung der Raumtemperatur vom Sollwert anpassen.";
-  }
-  String j="{\"simulationOnly\":true,\"period\":\"letzte "+String(periodHours==168?"7 Tage":"24 Stunden")+"\",\"samples\":"+String(n)+
-    ",\"requestedHours\":"+String(periodHours)+",\"windowSeconds\":"+String(duration)+",\"burnerStarts\":"+String(starts)+
-    ",\"burnerSeconds\":"+String(burner)+",\"pumpSeconds\":"+String(pump)+
-    ",\"burnerDutyPercent\":"+String(duty,1)+",\"startsPerHour\":"+String(startsPerHour,2)+
-    ",\"estimatedOilLiters\":"+String(burner*oilLitersPerHour/3600.0f,3)+
-    ",\"averageOutside\":"+String(n?sumA/n:0,1)+",\"averageRoom\":"+String(n?sumR/n:0,1)+
-    ",\"averageBoiler\":"+String(n?sumB/n:0,1)+",\"sufficientData\":"+(sufficient?"true":"false")+
-",\"advice\":\""+advice+"\"}";
-return j;
+  prevStarts=h.starts;prevBurn=h.burnerSec;prevPump=h.pumpSec;
+  prevEpoch=h.epoch;prevUptime=h.uptime;havePrev=true;
+ }
+ uint32_t duration=n>1 && last>=first?last-first:0;
+ float hours=duration/3600.0f;
+ float duty=duration?100.0f*burner/duration:0.0f;
+ float startsPerHour=hours>=0.25f?starts/hours:0.0f;
+ bool sufficient=n>=4 && duration>=900;
+ String advice="Zu wenig Messdaten: mindestens vier Messpunkte und 15 Minuten benoetigt.";
+ if(sufficient){
+  if(startsPerHour>6.0f)advice="Mehr als sechs Brenneranforderungen pro Stunde: Hysterese und Mindestlaufzeit pruefen. Keine automatische Aenderung.";
+  else if(duty>90.0f)advice="Brenneranforderung ueber 90 Prozent: Kesselsollwert, Heizkurve und Sensorwerte pruefen.";
+  else if(startsPerHour<1.0f)advice="Weniger als eine Brenneranforderung pro Stunde. Raumtemperatur gegen Sollwert beobachten.";
+  else advice="Keine auffaellige Anforderungsrate. Heizkurve nur bei wiederholter Raumabweichung anpassen.";
+ }
+ String j="{\"simulationOnly\":true,\"period\":\"letzte "+String(periodHours==168?"7 Tage":"24 Stunden")+"\",\"samples\":"+String(n)+
+   ",\"requestedHours\":"+String(periodHours)+",\"windowSeconds\":"+String(duration)+",\"burnerStarts\":"+String(starts)+
+   ",\"burnerSeconds\":"+String(burner)+",\"pumpSeconds\":"+String(pump)+
+   ",\"counterResets\":"+String(counterSegments)+
+   ",\"burnerDutyPercent\":"+String(duty,1)+",\"startsPerHour\":"+String(startsPerHour,2)+
+   ",\"estimatedOilLiters\":"+String(burner*oilLitersPerHour/3600.0f,3)+
+   ",\"averageOutside\":"+String(n?sumA/n:0,1)+",\"averageRoom\":"+String(n?sumR/n:0,1)+
+   ",\"averageBoiler\":"+String(n?sumB/n:0,1)+",\"sufficientData\":"+(sufficient?"true":"false")+
+   ",\"advice\":\""+advice+"\"}";
+ return j;
 }
 
 // Tankbilanz: manueller Anfangsbestand/Lieferungen minus geschaetzter Brennerverbrauch.
