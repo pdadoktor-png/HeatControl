@@ -88,13 +88,18 @@ async function loadSlopeTest(){
     ' | Vorlaeufige Test-Steigung '+(j.suggestedSlope==null?'nicht berechenbar':j.suggestedSlope);
   const a=await(await fetch('/api/slope-points/analysis',{cache:'no-store'})).json();
   if(a.error)throw Error(a.error);
+  const historyInfo=' | Historie: '+(a.historySamples||0)+' Messwerte (5-Minuten-Aufzeichnung)';
+  const errorInfo=a.averageRoomError==null?'':' | mittlere Untertemperatur '+Number(a.averageRoomError).toFixed(2)+' °C (Soll minus Ist)';
   if(!a.valid){
-   $('slopePassiveState').textContent='Langzeitauswertung: '+(a.observations||0)+' Beobachtungen, '+a.count+' stabile Punkte, '+a.ranges+
-    ' Außentemperaturbereiche, '+a.days+' Kalendertage. Für eine Empfehlung mindestens 12 Punkte, 3 Temperaturbereiche und 3 Tage erforderlich.';
+   $('slopePassiveState').textContent='Langzeitauswertung: '+a.observations+' Beobachtungen, '+a.count+
+    ' stabile Punkte, '+a.ranges+' Außentemperaturbereiche, '+a.days+
+    ' Kalendertage.'+historyInfo+errorInfo+
+    ' Für eine belastbare Tendenz mindestens 12 Beobachtungen, 3 Temperaturbereiche und 3 Tage erforderlich.';
   }else{
-   $('slopePassiveState').textContent='Langfristiger Orientierungswert: '+Number(a.median).toFixed(2)+
-    ' | '+(a.observations||0)+' Beobachtungen, '+a.count+' stabile Messpunkte, '+a.ranges+' Außentemperaturbereiche, '+a.days+
-    ' Tage. Nur Näherungswert; keine automatische Übernahme.';
+   $('slopePassiveState').textContent='Langzeitauswertung: '+a.tendency+
+    ' | '+a.observations+' Beobachtungen, '+a.count+' stabile Punkte.'+
+    historyInfo+errorInfo+
+    ' Noch keine verlässliche numerische Steilheitsempfehlung; keine automatische Übernahme.';
   }
  }catch(e){$('slopeTestState').textContent='Auswertung fehlgeschlagen: '+e.message}
 }
