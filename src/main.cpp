@@ -116,6 +116,7 @@ static size_t historyCount=0,historyHead=0;
 static bool historyFS=false;
 static uint32_t pumpSeconds=0;
 static uint32_t lastHistoryMs=0;
+static uint32_t lastCounterSaveMs=0;
 static uint32_t historyWrites=0;
 static uint32_t historyWriteErrors=0;
 static const char *HISTORY_FILE="/history.csv";
@@ -2243,9 +2244,11 @@ if(burnerDemand){
 if(pumpDemand)pumpSeconds++;
 if(burnerDemand && !previousDemand)burnerStarts++;
    }
-if(tankLevelKnown && (uint32_t)(millis()-tankLastSaveMs)>=60000UL)tankPersist();
-if(lastHistoryMs==0 || millis()-lastHistoryMs>=300000UL){lastHistoryMs=millis();
+if(tankLevelKnown && (uint32_t)(millis()-tankLastSaveMs)>=300000UL)tankPersist();
+if(lastHistoryMs==0 || (uint32_t)(millis()-lastHistoryMs)>=300000UL){lastHistoryMs=millis();
    historySample();
+   }
+if(lastCounterSaveMs==0 || (uint32_t)(millis()-lastCounterSaveMs)>=600000UL){lastCounterSaveMs=millis();
    prefs.putUInt("burnStarts",burnerStarts);
    prefs.putUInt("burnSecs",burnerSeconds);
    prefs.putUInt("pumpSecs",pumpSeconds);
