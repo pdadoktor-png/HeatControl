@@ -737,19 +737,35 @@ void slopePointSave(const char *mode){
  // 256 KB Obergrenze; bei Erreichen keine weiteren Schreibvorgaenge.
  // Die vorhandenen Messpunkte werden nicht automatisch geloescht.
 }
+static uint32_t slopePassiveLastSavedMs=0;
+static String slopePassiveReason="Warte auf geeignete Messwerte";
 void slopePointPassiveTick(){
- static uint32_t last=0;
- uint32_t now=millis();
- if((uint32_t)(now-last)<30UL*60UL*1000UL)return;
- last=now;
- if(slopeTestActive || inputMode!=1 || manualMode || !automatic || !simulationRunning ||
-    !sensor[0].valid || !sensor[2].valid || !isfinite(roomTemp) ||
-    fabsf(roomTemp-targetRoom)>0.5f)return;
- if(!historyFS)return;
+ const uint32_t now=millis();
+ if(slopePassiveLastSavedMs && (uint32_t)(now-slopePassiveLastSavedMs)<30UL*60UL*1000UL){
+  slopePassiveReason="Naechster Messpunkt nach 30 Minuten";
+  return;
+ }
+ if(!historyFS){slopePassiveReason="LittleFS nicht bereit";return;}
+ if(slopeTestActive){slopePassiveReason="Aktiver Steilheitstest laeuft";return;}
+ if(inputMode!=1){slopePassiveReason="NTC-Messbetrieb nicht aktiv";return;}
+ if(manualMode || !automatic || !simulationRunning){slopePassiveReason="Automatik/Regelung nicht aktiv";return;}
+ if(!sensor[0].valid || !sensor[2].valid || !isfinite(roomTemp) ||
+    !isfinite(outsideTemp) || !isfinite(boilerTemp) || !isfinite(targetRoom)){
+  slopePassiveReason="Temperaturmessung ungueltig";return;
+ }
+ if(fabsf(roomTemp-targetRoom)>0.5f){slopePassiveReason="Raumtemperatur mehr als 0,5 C vom Soll entfernt";return;}
+ if(time(nullptr)<1700000000){slopePassiveReason="Uhrzeit nicht synchronisiert";return;}
  File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
  size_t bytes=f?f.size():0;if(f)f.close();
- if(bytes>=256UL*1024UL)return;
+ if(bytes>=256UL*1024UL){slopePassiveReason="Messpunktdatei voll (256 KB)";return;}
+ uint32_t before=slopePointsSaved;
  slopePointSave("PASSIV");
+ if(slopePointsSaved>before){
+  slopePassiveLastSavedMs=now?now:1;
+  slopePassiveReason="Messpunkt gespeichert";
+ }else{
+  slopePassiveReason="Speichern fehlgeschlagen oder ungueltige Daten";
+ }
 }
 void slopeTestStop(const String &reason){
  if(slopeTestActive){slopePointSave("ENDE");slopeTestActive=false;slopeTestOffset=0;eventLog("STEILHEIT",String("Ermittlung beendet: ")+reason);}
@@ -1682,7 +1698,8 @@ server.on("/api/slope-points/status",HTTP_GET,[]{
  if(historyFS){File f=LittleFS.open(SLOPE_POINTS_FILE,"r");if(f){bytes=f.size();f.close();}}
  server.send(200,"application/json",String("{\"storage\":\"")+(historyFS?"LittleFS":"RAM")+
  "\",\"bytes\":"+String(bytes)+",\"newPoints\":"+String(slopePointsSaved)+
- ",\"writeErrors\":"+String(slopePointsErrors)+"}");
+ ",\"writeErrors\":"+String(slopePointsErrors)+
+ ",\"passiveReason\":\""+slopePassiveReason+"\"}");
 });
 server.on("/api/slope-test",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",slopeTestJson());});
 server.on("/api/slope-test",HTTP_POST,[]{
