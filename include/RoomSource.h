@@ -20,7 +20,7 @@ class RoomSource {
     source=(Source)nextSource; ip=nextIP;
     store->putUChar("roomSource",source);
     store->putString("roomIP",ip);
-    valid=false; lastSuccess=0; lastPoll=0;
+    valid=false; lastSuccess=0; lastPoll=0; consecutiveErrors=0; lastHttpCode=0;
     return true;
   }
   void poll() {
@@ -28,12 +28,15 @@ class RoomSource {
     const uint32_t now=millis();
     if(lastPoll!=0 && (uint32_t)(now-lastPoll)<10000) return;
     lastPoll=now?now:1;
-    if(WiFi.status()!=WL_CONNECTED) { valid=false; return; }
+    if(WiFi.status()!=WL_CONNECTED) { recordFailure(-100); return; }
     WiFiClient client;
     HTTPClient http;
-    http.setTimeout(1200);
-    if(!http.begin(client,String("http://")+ip+"/api/temperature")) { valid=false; return; }
+    http.setConnectTimeout(400);
+    http.setTimeout(700);
+    http.setReuse(false);
+    if(!http.begin(client,String("http://")+ip+"/api/temperature")) { recordFailure(-101); return; }
     int code=http.GET();
+    lastHttpCode=code;
     if(code==200) {
       JsonDocument doc;
       DeserializationError err=deserializeJson(doc,http.getStream());
@@ -43,11 +46,12 @@ class RoomSource {
         float t=doc["temperature"].as<float>();
         uint32_t age=doc["sample_age_ms"].as<uint32_t>();
         if(isfinite(t) && t>=-20 && t<=50 && age<=120000) {
-          temperature=t; lastSuccess=millis(); valid=true;
-        } else valid=false;
-      } else valid=false;
-    } else valid=false;
+          temperature=t; lastSuccess=millis(); valid=true; consecutiveErrors=0;
+        } else recordFailure(-102);
+      } else recordFailure(-103);
+    } else recordFailure(code);
     http.end();
+    client.stop();
   }
   bool available() const { return valid && lastSuccess!=0 && (uint32_t)(millis()-lastSuccess)<=120000; }
   float selected(float ntc) const {
@@ -58,12 +62,16 @@ class RoomSource {
     String s="{\"source\":\""+String(source==NTC?"ntc":"wlan")+"\",\"ip\":\""+ip+
       "\",\"wlanValid\":"+(available()?"true":"false")+
       ",\"wlanTemperature\":"+(available()?String(temperature,2):String("null"))+
-      ",\"ageMs\":"+(lastSuccess?String((uint32_t)(millis()-lastSuccess)):String("null"))+"}";
+      ",\"ageMs\":"+(lastSuccess?String((uint32_t)(millis()-lastSuccess)):String("null"))+
+      ",\"errors\":"+String(consecutiveErrors)+",\"lastHttpCode\":"+String(lastHttpCode)+"}";
     return s;
   }
   Source source=NTC;
   String ip="192.168.0.26";
  private:
+  uint32_t consecutiveErrors=0;
+  int lastHttpCode=0;
+  void recordFailure(int code){valid=false;lastHttpCode=code;if(consecutiveErrors<UINT32_MAX)consecutiveErrors++;}
   Preferences* store=nullptr;
   float temperature=NAN;
   bool valid=false;
