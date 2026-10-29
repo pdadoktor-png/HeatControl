@@ -20,7 +20,7 @@ class RoomSource {
     source=(Source)nextSource; ip=nextIP;
     store->putUChar("roomSource",source);
     store->putString("roomIP",ip);
-    valid=false; lastSuccess=0; lastPoll=0; consecutiveErrors=0; lastHttpCode=0;
+    valid=false; lastSuccess=0; lastPoll=0; consecutiveErrors=0; lastHttpCode=0; lastDurationMs=0; maxDurationMs=0; slowPolls=0; pollCount=0;
     return true;
   }
   void poll() {
@@ -28,6 +28,7 @@ class RoomSource {
     const uint32_t now=millis();
     if(lastPoll!=0 && (uint32_t)(now-lastPoll)<10000) return;
     lastPoll=now?now:1;
+    struct PollTimer { RoomSource* self; uint32_t start; ~PollTimer(){ uint32_t ms=(uint32_t)(millis()-start); self->lastDurationMs=ms; if(ms>self->maxDurationMs)self->maxDurationMs=ms; if(ms>=1000)self->slowPolls++; self->pollCount++; } } timer{this,millis()};
     if(WiFi.status()!=WL_CONNECTED) { recordFailure(-100); return; }
     WiFiClient client;
     HTTPClient http;
@@ -64,8 +65,11 @@ class RoomSource {
       ",\"wlanTemperature\":"+(available()?String(temperature,2):String("null"))+
       ",\"ageMs\":"+(lastSuccess?String((uint32_t)(millis()-lastSuccess)):String("null"))+
       ",\"errors\":"+String(consecutiveErrors)+",\"lastHttpCode\":"+String(lastHttpCode)+"}";
+    s.remove(s.length()-1); // append diagnostics before closing brace
+    s+=",\"lastPollMs\":"+String(lastDurationMs)+",\"maxPollMs\":"+String(maxDurationMs)+",\"slowPolls\":"+String(slowPolls)+",\"pollCount\":"+String(pollCount)+"}";
     return s;
   }
+  uint32_t lastDurationMs=0,maxDurationMs=0,slowPolls=0,pollCount=0;
   Source source=NTC;
   String ip="192.168.0.26";
  private:
