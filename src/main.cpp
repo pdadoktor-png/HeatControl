@@ -718,6 +718,7 @@ void slopePointSave(const char *mode){
  if(epoch<1700000000)return;
  File f=LittleFS.open(SLOPE_POINTS_FILE,"a");
  if(!f){slopePointsErrors++;return;}
+ if(f.size()>=256UL*1024UL){f.close();return;}
  float set=targetRoom+slope*(targetRoom-outsideTemp)+(slopeTestActive?slopeTestOffset:0);
  size_t n=f.printf("%lu;%s;%.2f;%.2f;%.2f;%.2f;%.2f;%.3f;%.2f\n",
   (unsigned long)epoch,mode,outsideTemp,roomTemp,targetRoom,boilerTemp,
