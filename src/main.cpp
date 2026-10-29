@@ -1667,44 +1667,78 @@ server.on("/api/slope-points.csv",HTTP_GET,[]{
  server.streamFile(f,"text/csv; charset=utf-8");f.close();
 });
 server.on("/api/slope-points/analysis",HTTP_GET,[]{
- if(!historyFS){server.send(503,"application/json","{\"error\":\"LittleFS nicht bereit\"}");return;}
- File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
- if(!f){server.send(200,"application/json","{\"count\":0,\"ranges\":0,\"days\":0,\"median\":null,\"valid\":false}");return;}
- uint32_t first=0,last=0,count=0,observations=0;
- uint32_t bins=0;
- // Streaming-Auswertung mit Histogramm: konstanter RAM-Bedarf, kein Laden der ganzen CSV.
- uint32_t histogram[281]={};
- while(f.available()){
-  String line=f.readStringUntil('\n');
-  unsigned long ts=0;char mode[16]={};
-  float outside=0,room=0,target=0,boiler=0,setpoint=0,storedSlope=0,offset=0;
-  if(sscanf(line.c_str(),"%lu;%15[^;];%f;%f;%f;%f;%f;%f;%f",
-    &ts,mode,&outside,&room,&target,&boiler,&setpoint,&storedSlope,&offset)!=9)continue;
-  if(ts<1700000000UL || !isfinite(outside)||!isfinite(room)||!isfinite(target)||
-     !isfinite(setpoint))continue;
-  if(strcmp(mode,"PASSIV_BEOB")==0){observations++;continue;}
-  if(strcmp(mode,"PASSIV_STABIL")!=0 && strcmp(mode,"PASSIV")!=0)continue;
-  if(fabsf(room-target)>0.5f || target-outside<6.0f)continue;
-  float proposed=(setpoint-target)/(target-outside);
-  if(!isfinite(proposed)||proposed<0.2f||proposed>3.0f)continue;
-  int slot=constrain((int)lroundf((proposed-0.2f)*100.0f),0,280);
-  histogram[slot]++;count++;
-  if(!first||ts<first)first=ts;if(ts>last)last=ts;
-  int bucket=constrain((int)floorf((outside+30.0f)/3.0f),0,31);
-  bins|=(1UL<<bucket);
+ // Gemeinsame Sicht auf Historie und Langzeitpunkte. Keine doppelte Gewichtung:
+ // Historie nur als Kontext; Zieltemperatur ist dort nicht historisch gespeichert.
+ uint32_t historySamples=0, historyFirst=0,historyLast=0;
+ double historyRoom=0,historyOutside=0,historyBoiler=0;
+ for(size_t i=0;i<historyCount;i++){
+  HistorySample h=historyAt(i);
+  if(h.epoch<1700000000UL || !(h.flags&4))continue;
+  float a=h.outside10/10.0f,r=h.room10/10.0f,k=h.boiler10/10.0f;
+  if(a< -40||a>60||r<0||r>45||k<0||k>110)continue;
+  if(!historyFirst||h.epoch<historyFirst)historyFirst=h.epoch;
+  if(h.epoch>historyLast)historyLast=h.epoch;
+  historySamples++;historyRoom+=r;historyOutside+=a;historyBoiler+=k;
  }
- f.close();
- uint32_t seen=0;float median=NAN;
- for(int i=0;i<281;i++){seen+=histogram[i];if(count && seen>=(count+1)/2){median=0.2f+i*0.01f;break;}}
- uint32_t days=last>=first?(last-first)/86400UL+1:0;
+ uint32_t observations=0,count=0,first=0,last=0,bins=0;
+ double errorSum=0,stableErrorSum=0;
+ float minError=100,maxError=-100;
+ uint32_t dayBuckets[32]={};
+ if(historyFS){
+  File f=LittleFS.open(SLOPE_POINTS_FILE,"r");
+  if(f){
+   while(f.available()){
+    String line=f.readStringUntil('\\n');
+    unsigned long ts=0;char mode[16]={};
+    float outside=0,room=0,target=0,boiler=0,setpoint=0,storedSlope=0,offset=0;
+    if(sscanf(line.c_str(),"%lu;%15[^;];%f;%f;%f;%f;%f;%f;%f",
+      &ts,mode,&outside,&room,&target,&boiler,&setpoint,&storedSlope,&offset)!=9)continue;
+    if(ts<1700000000UL||!isfinite(outside)||!isfinite(room)||!isfinite(target)||
+       !isfinite(boiler)||!isfinite(setpoint)||outside< -40||outside>60||
+       room<0||room>45||target<10||target>35||boiler<0||boiler>110)continue;
+    if(strcmp(mode,"PASSIV_BEOB")!=0 && strcmp(mode,"PASSIV_STABIL")!=0 &&
+       strcmp(mode,"PASSIV")!=0)continue;
+    float err=target-room;
+    observations++;errorSum+=err;
+    if(err<minError)minError=err;if(err>maxError)maxError=err;
+    if(!first||ts<first)first=ts;if(ts>last)last=ts;
+    int bucket=constrain((int)floorf((outside+30.0f)/3.0f),0,31);
+    bins|=(1UL<<bucket);
+    // Stabile Punkte bleiben separat erkennbar. Alte PASSIV-Punkte
+    // ohne zeitliche Stabilitaetspruefung nicht nachtraeglich qualifizieren.
+    if(strcmp(mode,"PASSIV_STABIL")==0 && fabsf(err)<=0.5f){
+     count++;stableErrorSum+=err;
+    }
+   }
+   f.close();
+  }
+ }
+ uint32_t days=last>=first?(last/86400UL-first/86400UL+1):0;
  int ranges=__builtin_popcount(bins);
- bool enough=count>=12&&ranges>=3&&days>=3;
+ // 12 Beobachtungen, 3 Temperaturbereiche, mindestens 3 Tage.
+ // Noch keine mathematisch belastbare neue Steilheit: keine Rueckkopplung
+ // der konfigurierten Steilheit als angeblich gemessene Empfehlung.
+ bool enough=observations>=12 && ranges>=3 && days>=3;
+ float avgError=observations?(float)(errorSum/observations):NAN;
+ String tendency="Noch zu wenig Langzeitdaten";
+ if(enough){
+  if(avgError>0.3f)tendency="Raum im Mittel zu kalt; Heizkurve pruefen";
+  else if(avgError< -0.3f)tendency="Raum im Mittel zu warm; Heizkurve pruefen";
+  else tendency="Raumtemperatur im Mittel nahe Soll";
+ }
+ server.sendHeader("Cache-Control","no-store");
  server.send(200,"application/json",String("{\"count\":")+String(count)+
    ",\"observations\":"+String(observations)+
+   ",\"historySamples\":"+String(historySamples)+
+   ",\"historyFirst\":"+String(historyFirst)+",\"historyLast\":"+String(historyLast)+
+   ",\"historyAverageRoom\":"+(historySamples?String(historyRoom/historySamples,2):String("null"))+
+   ",\"historyAverageOutside\":"+(historySamples?String(historyOutside/historySamples,2):String("null"))+
+   ",\"historyAverageBoiler\":"+(historySamples?String(historyBoiler/historySamples,2):String("null"))+
+   ",\"averageRoomError\":"+(observations?String(avgError,2):String("null"))+
    ",\"ranges\":"+String(ranges)+",\"days\":"+String(days)+
    ",\"first\":"+String(first)+",\"last\":"+String(last)+
-   ",\"median\":"+(isfinite(median)?String(median,2):String("null"))+
-   ",\"valid\":"+(enough?"true":"false")+"}");
+   ",\"median\":null,\"valid\":"+(enough?"true":"false")+
+   ",\"recommendationReady\":false,\"tendency\":\""+tendency+"\"}");
 });
 server.on("/api/slope-points/status",HTTP_GET,[]{
  size_t bytes=0;
