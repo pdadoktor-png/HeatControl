@@ -2251,13 +2251,32 @@ if(loopLastStart!=0){
   }
 }
 loopLastStart=loopStart;
+// Abschnittsdiagnose: Dauer direkt um jeden Aufruf messen.
+// Pro Schleifendurchlauf den langsamsten Abschnitt merken; erst am Ende protokollieren.
+uint32_t diagSectionStart=0, diagWorstMs=0;
+const char* diagWorstName="unbekannt";
+auto diagBegin=[&](){diagSectionStart=millis();};
+auto diagEnd=[&](const char* name){
+  const uint32_t duration=(uint32_t)(millis()-diagSectionStart);
+  if(duration>diagWorstMs){diagWorstMs=duration;diagWorstName=name;}
+};
+diagBegin();
 relaySerial();
 relayUpdate();
+diagEnd("Relais");
+diagBegin();
 server.handleClient();
+diagEnd("Webserver");
+diagBegin();
 maintainOTA();
+diagEnd("OTA");
+diagBegin();
 roomSource.poll();
+diagEnd("WLAN-Raum");
 if(millis()-lastSensorPoll>=1500){lastSensorPoll=millis();
+ diagBegin();
  pollSensors();
+ diagEnd("ADS1115");
  bool sensorValuesOk=applyPotiTemperatures();
  uint8_t faultMask=(!sensor[0].valid?1:0)|(!isfinite(roomTemp)?2:0)|(!sensor[2].valid?4:0);
  if(previousSensorFaultMask==255){
@@ -2275,12 +2294,20 @@ static uint32_t prevTick=millis();
 uint32_t now=millis();
 lv_tick_inc(now-prevTick);
  prevTick=now;
+diagBegin();
 lv_timer_handler();
+diagEnd("LVGL");
+diagBegin();
 touchCalService();
+diagEnd("Touch");
 if(millis()-lastTick>=1000){lastTick=millis();
+ diagBegin();
  evaluateProgram();
+ diagEnd("Schaltprogramm");
+ diagBegin();
  slopeTestTick();
  slopePointPassiveTick();
+ diagEnd("Steilheit/LittleFS");
  float set=desiredBoiler();
 bool previousDemand=burnerDemand;
    bool sensorsOk=inputMode==0 || (sensor[0].valid && sensor[2].valid && isfinite(outsideTemp) && isfinite(boilerTemp));
@@ -2345,4 +2372,7 @@ Serial.printf("ADS1115: I2C %s, Fehler %lu, Wiederherstellungen %lu, OK-Zyklen %
 Serial.printf("Pumpe(sim) %s | Heizbedarf %s, Frost %s, Sommer %s, Nachlauf %lu s\n",pumpDemand?"EIN":"AUS",pumpHeatRequest?"JA":"NEIN",pumpFrostRequest?"JA":"NEIN",pumpSummerLock?"JA":"NEIN",(unsigned long)pumpOverrunRemaining());
 Serial.printf("Aussen %.1f Raum %.1f Kessel %.1f Soll %.1f Brenner(sim) %s | Hyst %.1f C, Min EIN %u s, Min AUS %u s, Sperre %lu s\n",outsideTemp,roomTemp,boilerTemp,set,burnerDemand?"EIN":"AUS",hysteresis,minBurnerOnSeconds,minBurnerOffSeconds,(unsigned long)burnerLockRemaining());
  }
+if(diagWorstMs>=1500){
+  eventLog("DIAGNOSE",String("Abschnitt ")+diagWorstName+" dauerte "+diagWorstMs+" ms");
+}
 }
