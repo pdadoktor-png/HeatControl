@@ -17,10 +17,19 @@ read_new = """      if (_currentClient.available()) {
         // HeatControl: per-Stream-read timeout in milliseconds.
         _currentClient.setTimeout(250);
         if (_parseRequest(_currentClient)) {"""
+# Accept both a clean framework and one patched by the previous HeatControl hook.
+legacy_read = """      if (_currentClient.available()) {
+        // HeatControl: bound each Stream::readStringUntil() wait in Parsing.cpp.
+        // Milliseconds; not a whole-request deadline.
+        _currentClient.setTimeout(250);
+        if (_parseRequest(_currentClient)) {"""
 if read_new not in text:
-    if text.count(read_old) != 1:
+    if legacy_read in text:
+        text = text.replace(legacy_read, read_new, 1)
+    elif text.count(read_old) == 1:
+        text = text.replace(read_old, read_new, 1)
+    else:
         raise RuntimeError("Unexpected WebServer::handleClient source (timeout)")
-    text = text.replace(read_old, read_new, 1)
 
 # Diagnostic counters are shared with HeatControl main.cpp; they are only
 # written by the Arduino loop task and read after handleClient() returns.
