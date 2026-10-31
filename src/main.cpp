@@ -182,18 +182,33 @@ static void eventLoadFromFlash(){
  }
 }
 static void eventSendJson(){
-server.sendHeader("Cache-Control","no-store");
-server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  // Batch JSON output: avoid a TCP/chunk write for every event.
+  server.sendHeader("Cache-Control","no-store");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200,"application/json","");
-server.sendContent(String("{\"simulationOnly\":true,\"storage\":\"")+(historyFS?"LittleFS":"RAM")+"\",\"writeErrors\":"+String(eventFileErrors)+",\"events\":[");
+  String chunk;
+  chunk.reserve(2048);
+  chunk=String("{\"simulationOnly\":true,\"storage\":\"")+
+    (historyFS?"LittleFS":"RAM")+"\",\"writeErrors\":"+
+    String(eventFileErrors)+",\"events\":[";
   for(size_t i=0;i<eventCount;i++){
-const EventEntry &e=events[(eventHead+EVENT_MAX-eventCount+i)%EVENT_MAX];
-String d=e.detail;
+    const EventEntry &e=events[(eventHead+EVENT_MAX-eventCount+i)%EVENT_MAX];
+    String d=e.detail;
     d.replace("\\","\\\\");
     d.replace("\"","\\\"");
-server.sendContent(String(i?",":"")+"{\"t\":"+String(e.epoch)+",\"uptime\":"+String(e.uptime)+",\"type\":\""+e.kind+"\",\"detail\":\""+d+"\"}");
+    d.replace("\n","\\n");
+    d.replace("\r","\\r");
+    String item=String(i?",":"")+"{\"t\":"+String(e.epoch)+
+      ",\"uptime\":"+String(e.uptime)+",\"type\":\""+e.kind+
+      "\",\"detail\":\""+d+"\"}";
+    if(chunk.length()+item.length()>1800 && chunk.length()){
+      server.sendContent(chunk);
+      chunk="";
+    }
+    chunk+=item;
   }
-server.sendContent("]}");
+  chunk+="]}";
+  server.sendContent(chunk);
   server.sendContent("");
 }
 static void eventSendCsv(){
