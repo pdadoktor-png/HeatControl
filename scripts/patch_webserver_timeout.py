@@ -23,13 +23,29 @@ legacy_read = """      if (_currentClient.available()) {
         // Milliseconds; not a whole-request deadline.
         _currentClient.setTimeout(250);
         if (_parseRequest(_currentClient)) {"""
-if read_new not in text:
-    if legacy_read in text:
-        text = text.replace(legacy_read, read_new, 1)
-    elif text.count(read_old) == 1:
-        text = text.replace(read_old, read_new, 1)
-    else:
-        raise RuntimeError("Unexpected WebServer::handleClient source (timeout)")
+# Already-instrumented builds replace the original _parseRequest() call,
+# so the timeout must be detected independently of that call.
+instrumented_read = """      if (_currentClient.available()) {
+        // HeatControl: per-Stream-read timeout in milliseconds.
+        _currentClient.setTimeout(250);
+        const uint32_t hcParseStart = millis();"""
+legacy_instrumented_read = """      if (_currentClient.available()) {
+        // HeatControl: bound each Stream::readStringUntil() wait in Parsing.cpp.
+        // Milliseconds; not a whole-request deadline.
+        _currentClient.setTimeout(250);
+        const uint32_t hcParseStart = millis();"""
+if instrumented_read in text:
+    pass
+elif legacy_instrumented_read in text:
+    text = text.replace(legacy_instrumented_read, instrumented_read, 1)
+elif read_new in text:
+    pass
+elif legacy_read in text:
+    text = text.replace(legacy_read, read_new, 1)
+elif text.count(read_old) == 1:
+    text = text.replace(read_old, read_new, 1)
+else:
+    raise RuntimeError("Unexpected WebServer::handleClient source (timeout)")
 
 # Diagnostic counters are shared with HeatControl main.cpp; they are only
 # written by the Arduino loop task and read after handleClient() returns.
@@ -43,9 +59,13 @@ char heatcontrolHttpLastUri[96] = {0};
 
 void WebServer::handleClient() {"""
 if globals_new not in text:
-    if text.count(globals_anchor) != 1:
+    previous_globals = globals_new.replace("char heatcontrolHttpLastUri[96] = {0};\n", "")
+    if previous_globals in text:
+        text = text.replace(previous_globals, globals_new, 1)
+    elif text.count(globals_anchor) == 1:
+        text = text.replace(globals_anchor, globals_new, 1)
+    else:
         raise RuntimeError("Unexpected WebServer::handleClient source (globals)")
-    text = text.replace(globals_anchor, globals_new, 1)
 
 parse_old = """        if (_parseRequest(_currentClient)) {
           // because HTTP_MAX_SEND_WAIT"""
@@ -74,9 +94,18 @@ handle_new = """          // Capture the URI before WebServer clears its request
 
 // Fix for issue with Chrome based browsers:"""
 if handle_new not in text:
-    if text.count(handle_old) != 1:
+    previous_handle = """          const uint32_t hcHandleStart = millis();
+          _handleRequest();
+          heatcontrolHttpHandleMs = millis() - hcHandleStart;
+          ++heatcontrolHttpHandleSeq;
+
+// Fix for issue with Chrome based browsers:"""
+    if previous_handle in text:
+        text = text.replace(previous_handle, handle_new, 1)
+    elif text.count(handle_old) == 1:
+        text = text.replace(handle_old, handle_new, 1)
+    else:
         raise RuntimeError("Unexpected WebServer::handleClient source (handle)")
-    text = text.replace(handle_old, handle_new, 1)
 
 if source.read_text(encoding="utf-8") != text:
     source.write_text(text, encoding="utf-8")
