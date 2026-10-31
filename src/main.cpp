@@ -2266,6 +2266,9 @@ relayUpdate();
 diagEnd("Relais");
 diagBegin();
 server.handleClient();
+const uint32_t webElapsedMs=(uint32_t)(millis()-diagSectionStart);
+const String webLastUri=server.uri();
+const int webLastMethod=(int)server.method();
 diagEnd("Webserver");
 diagBegin();
 maintainOTA();
@@ -2373,6 +2376,14 @@ Serial.printf("Pumpe(sim) %s | Heizbedarf %s, Frost %s, Sommer %s, Nachlauf %lu 
 Serial.printf("Aussen %.1f Raum %.1f Kessel %.1f Soll %.1f Brenner(sim) %s | Hyst %.1f C, Min EIN %u s, Min AUS %u s, Sperre %lu s\n",outsideTemp,roomTemp,boilerTemp,set,burnerDemand?"EIN":"AUS",hysteresis,minBurnerOnSeconds,minBurnerOffSeconds,(unsigned long)burnerLockRemaining());
  }
 if(diagWorstMs>=1500){
-  eventLog("DIAGNOSE",String("Abschnitt ")+diagWorstName+" dauerte "+diagWorstMs+" ms");
+  String detail=String("Abschnitt ")+diagWorstName+" dauerte "+diagWorstMs+" ms";
+  if(strcmp(diagWorstName,"Webserver")==0){
+    // WebServer::uri() is the last parsed request; for an incomplete request
+    // it may be stale, so report it explicitly as a candidate, not proof.
+    detail+="; letzte geparste URL="+(webLastUri.length()?webLastUri:String("(unbekannt)"));
+    detail+="; Methode="+String(webLastMethod);
+    detail+="; HTTP-Zeit="+String(webElapsedMs)+" ms";
+  }
+  eventLog("DIAGNOSE",detail);
 }
 }
