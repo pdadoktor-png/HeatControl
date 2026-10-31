@@ -61,6 +61,11 @@ Serial.print("OTA: bereit unter ");
   }
 ArduinoOTA.handle();
 }
+// Counters exported by scripts/patch_webserver_timeout.py (WebServer.cpp).
+extern volatile uint32_t heatcontrolHttpParseMs;
+extern volatile uint32_t heatcontrolHttpHandleMs;
+extern volatile uint32_t heatcontrolHttpParseSeq;
+extern volatile uint32_t heatcontrolHttpHandleSeq;
 WebServer server(80);
 Preferences prefs;
 RoomSource roomSource;
@@ -2267,6 +2272,12 @@ diagEnd("Relais");
 diagBegin();
 server.handleClient();
 const uint32_t webElapsedMs=(uint32_t)(millis()-diagSectionStart);
+static uint32_t lastParseSeq=0, lastHandleSeq=0;
+const uint32_t parseSeq=heatcontrolHttpParseSeq, handleSeq=heatcontrolHttpHandleSeq;
+const uint32_t parseMs=(parseSeq!=lastParseSeq)?heatcontrolHttpParseMs:0;
+const uint32_t handleMs=(handleSeq!=lastHandleSeq)?heatcontrolHttpHandleMs:0;
+lastParseSeq=parseSeq;
+lastHandleSeq=handleSeq;
 const String webLastUri=server.uri();
 const int webLastMethod=(int)server.method();
 diagEnd("Webserver");
@@ -2383,6 +2394,10 @@ if(diagWorstMs>=1500){
     detail+="; letzte geparste URL="+(webLastUri.length()?webLastUri:String("(unbekannt)"));
     detail+="; Methode="+String(webLastMethod);
     detail+="; HTTP-Zeit="+String(webElapsedMs)+" ms";
+    detail+="; Parser="+String(parseMs)+" ms; Handler="+String(handleMs)+" ms";
+    if(parseMs>=1500)detail+="; Ursache=Parser";
+    else if(handleMs>=1500)detail+="; Ursache=Antwort/Handler";
+    else detail+="; Ursache=sonstige HTTP-Verarbeitung";
   }
   eventLog("DIAGNOSE",detail);
 }
