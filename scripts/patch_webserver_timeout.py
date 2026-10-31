@@ -39,6 +39,7 @@ volatile uint32_t heatcontrolHttpParseMs = 0;
 volatile uint32_t heatcontrolHttpHandleMs = 0;
 volatile uint32_t heatcontrolHttpParseSeq = 0;
 volatile uint32_t heatcontrolHttpHandleSeq = 0;
+char heatcontrolHttpLastUri[96] = {0};
 
 void WebServer::handleClient() {"""
 if globals_new not in text:
@@ -62,7 +63,11 @@ if parse_new not in text:
 handle_old = """          _handleRequest();
 
 // Fix for issue with Chrome based browsers:"""
-handle_new = """          const uint32_t hcHandleStart = millis();
+handle_new = """          // Capture the URI before WebServer clears its request state.
+          const String hcUri = uri();
+          hcUri.substring(0, sizeof(heatcontrolHttpLastUri) - 1)
+              .toCharArray(heatcontrolHttpLastUri, sizeof(heatcontrolHttpLastUri));
+          const uint32_t hcHandleStart = millis();
           _handleRequest();
           heatcontrolHttpHandleMs = millis() - hcHandleStart;
           ++heatcontrolHttpHandleSeq;
