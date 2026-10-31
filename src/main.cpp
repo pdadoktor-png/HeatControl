@@ -300,26 +300,35 @@ static String historyStatusJson(){
 ",\"writeErrors\":"+String(historyWriteErrors)+"}";
 }
 static void historySendJson(){
-int hours=server.hasArg("hours")?server.arg("hours").toInt():24;
-hours=constrain(hours,1,168);
-uint32_t nowEpoch=time(nullptr)>1700000000?(uint32_t)time(nullptr):0;
-uint32_t nowUp=millis()/1000;
-server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-server.send(200,"application/json","[ ");
-bool first=true;
+  int hours=server.hasArg("hours")?server.arg("hours").toInt():24;
+  hours=constrain(hours,1,168);
+  const uint32_t nowEpoch=time(nullptr)>1700000000?(uint32_t)time(nullptr):0;
+  const uint32_t nowUp=millis()/1000;
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200,"application/json","");
+  String chunk;
+  chunk.reserve(2048);
+  chunk="[";
+  bool first=true;
   for(size_t i=0;i<historyCount;i++){
-HistorySample h=historyAt(i);
-    bool recent=(nowEpoch && h.epoch)?(nowEpoch>=h.epoch && nowEpoch-h.epoch<=(uint32_t)hours*3600):
-(nowUp>=h.uptime && nowUp-h.uptime<=(uint32_t)hours*3600);
-if(!recent)continue;
+    HistorySample h=historyAt(i);
+    bool recent=(nowEpoch && h.epoch)?
+      (nowEpoch>=h.epoch && nowEpoch-h.epoch<=(uint32_t)hours*3600):
+      (nowUp>=h.uptime && nowUp-h.uptime<=(uint32_t)hours*3600);
+    if(!recent)continue;
     String item=String(first?"":",")+"{\"t\":"+String(h.epoch)+",\"u\":"+String(h.uptime)+
       ",\"a\":"+String(h.outside10/10.f,1)+",\"r\":"+String(h.room10/10.f,1)+
       ",\"b\":"+String(h.boiler10/10.f,1)+",\"burner\":"+String((h.flags&1)?1:0)+
-",\"pump\":"+String((h.flags&2)?1:0)+"}";
-server.sendContent(item);
+      ",\"pump\":"+String((h.flags&2)?1:0)+"}";
+    if(chunk.length()+item.length()>1800 && chunk.length()){
+      server.sendContent(chunk);
+      chunk="";
+    }
+    chunk+=item;
     first=false;
   }
-server.sendContent("]");
+  chunk+="]";
+  server.sendContent(chunk);
   server.sendContent("");
 }
 static void historyCsv(){
