@@ -212,26 +212,41 @@ static void eventSendJson(){
   server.sendContent("");
 }
 static void eventSendCsv(){
-server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-events.csv");
-server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-events.csv");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   server.send(200,"text/csv; charset=utf-8","");
-server.sendContent("epoch;uptime_s;typ;details\n");
-  // Alle gespeicherten Ereignisse aus Flash (einschliesslich rotierter Datei).
+  String chunk;
+  chunk.reserve(2048);
+  chunk="epoch;uptime_s;typ;details\n";
+  // Preserve full LittleFS event archive, including rotated file.
   if(historyFS){
     for(const char *name : {"/events-old.csv","/events.csv"}){
-File f=LittleFS.open(name,"r");
-      if(f){while(f.available()){String line=f.readStringUntil('\n');
-      server.sendContent(line+"\n");
-      }f.close();
+      File f=LittleFS.open(name,"r");
+      if(!f)continue;
+      while(f.available()){
+        String line=f.readStringUntil('\n')+"\n";
+        if(chunk.length()+line.length()>1800 && chunk.length()){
+          server.sendContent(chunk);
+          chunk="";
+        }
+        chunk+=line;
       }
+      f.close();
     }
   }else{
     for(size_t i=0;i<eventCount;i++){
-const EventEntry &e=events[(eventHead+EVENT_MAX-eventCount+i)%EVENT_MAX];
-server.sendContent(String(e.epoch)+";"+String(e.uptime)+";"+csvSafe(e.kind)+";"+csvSafe(e.detail)+"\n");
+      const EventEntry &e=events[(eventHead+EVENT_MAX-eventCount+i)%EVENT_MAX];
+      String line=String(e.epoch)+";"+String(e.uptime)+";"+
+        csvSafe(e.kind)+";"+csvSafe(e.detail)+"\n";
+      if(chunk.length()+line.length()>1800 && chunk.length()){
+        server.sendContent(chunk);
+        chunk="";
+      }
+      chunk+=line;
     }
   }
-server.sendContent("");
+  if(chunk.length())server.sendContent(chunk);
+  server.sendContent("");
 }
 static void historyInsert(const HistorySample &r){
 history[historyHead]=r;
