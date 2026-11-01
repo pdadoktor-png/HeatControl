@@ -347,14 +347,27 @@ static void historySendJson(){
   server.sendContent("");
 }
 static void historyCsv(){
-server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-simulation.csv");
-server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-server.send(200,"text/csv; charset=utf-8","epoch_utc,uptime_s,aussen_C,raum_C,kessel_C,brenner_sim,pumpe_sim,starts_sim,brennersekunden_sim,pumpensekunden_sim\n");
+  server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-simulation.csv");
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200,"text/csv; charset=utf-8","");
+  String chunk;
+  chunk.reserve(2048);
+  chunk="epoch_utc,uptime_s,aussen_C,raum_C,kessel_C,brenner_sim,pumpe_sim,starts_sim,brennersekunden_sim,pumpensekunden_sim\n";
   for(size_t i=0;i<historyCount;i++){
-HistorySample h=historyAt(i);
-server.sendContent(String(h.epoch)+","+String(h.uptime)+","+String(h.outside10/10.f,1)+","+String(h.room10/10.f,1)+","+String(h.boiler10/10.f,1)+","+String((h.flags&1)?1:0)+","+String((h.flags&2)?1:0)+","+String(h.starts)+","+String(h.burnerSec)+","+String(h.pumpSec)+"\n");
+    HistorySample h=historyAt(i);
+    String line=String(h.epoch)+","+String(h.uptime)+","+
+      String(h.outside10/10.f,1)+","+String(h.room10/10.f,1)+","+
+      String(h.boiler10/10.f,1)+","+String((h.flags&1)?1:0)+","+
+      String((h.flags&2)?1:0)+","+String(h.starts)+","+
+      String(h.burnerSec)+","+String(h.pumpSec)+"\n";
+    if(chunk.length()+line.length()>1800 && chunk.length()){
+      server.sendContent(chunk);
+      chunk="";
+    }
+    chunk+=line;
   }
-server.sendContent("");
+  if(chunk.length())server.sendContent(chunk);
+  server.sendContent("");
 }
 
 // v0.5.4: Read-only simulation diagnostics; no automatic changes to control settings.
