@@ -46,7 +46,7 @@ body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin
 <script>
 let init=false,program=null,loadedProgram=false,simRunning=false,simBusy=false;const $=id=>document.getElementById(id);
 function feedback(msg){let x=document.getElementById('feedback');if(x)x.textContent=msg;}
-function tab(id){const enteringStats=id==='stats'&&!$('stats').classList.contains('sel');document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('sel',x.id===id));document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('sel',x.getAttribute('onclick')==="tab('"+id+"')"));if(enteringStats)loadStats();}
+function tab(id){const enteringStats=id==='stats'&&!$('stats').classList.contains('sel');const enteringSchedule=id==='schedule'&&!$('schedule').classList.contains('sel');if(enteringSchedule&&program){if(currentDay>=0)collectPhases(currentDay);$('day').value=(new Date().getDay()+6)%7;renderPhases();}document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('sel',x.id===id));document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('sel',x.getAttribute('onclick')==="tab('"+id+"')"));if(enteringStats)loadStats();}
 function drawHeatingCurve(j){
  const svg=$('curveSvg');if(!svg)return;
  const W=640,H=315,L=58,R=20,T=20,B=46;
