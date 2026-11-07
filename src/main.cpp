@@ -71,7 +71,7 @@ WebServer server(80);
 Preferences prefs;
 RoomSource roomSource;
 float outsideTemp=NAN, roomTemp=NAN, boilerTemp=NAN;
-float slope=1.2f, targetRoom=21, hysteresis=5;
+float slope=1.2f, curveLevel=0.0f, targetRoom=21, hysteresis=5;
 uint16_t minBurnerOnSeconds=30, minBurnerOffSeconds=20;
 // Nur Testbetrieb
 uint32_t lastBurnerTransitionMs=0;
@@ -794,7 +794,7 @@ void slopePointSave(const char *mode){
  File f=LittleFS.open(SLOPE_POINTS_FILE,"a");
  if(!f){slopePointsErrors++;return;}
  if(f.size()>=256UL*1024UL){f.close();return;}
- float set=targetRoom+slope*(targetRoom-outsideTemp)+(slopeTestActive?slopeTestOffset:0);
+ float set=targetRoom+slope*(targetRoom-outsideTemp)+curveLevel+(slopeTestActive?slopeTestOffset:0);
  size_t n=f.printf("%lu;%s;%.2f;%.2f;%.2f;%.2f;%.2f;%.3f;%.2f\n",
   (unsigned long)epoch,mode,outsideTemp,roomTemp,targetRoom,boilerTemp,
   constrain(set,25.0f,70.0f),slope,slopeTestActive?slopeTestOffset:0.0f);
@@ -882,7 +882,7 @@ String slopeTestJson(){
 float desiredBoiler() {
   // Vorlaeufige, begrenzte Test-Heizkurve; spaeter kalibrieren.
 if (!isfinite(outsideTemp)) return NAN;
-float setpoint = targetRoom + slope * (targetRoom-outsideTemp);
+float setpoint = targetRoom + slope * (targetRoom-outsideTemp) + curveLevel;
 if(slopeTestActive)setpoint+=slopeTestOffset;
 return constrain(setpoint, 25.0f, 70.0f);
 }
@@ -903,7 +903,7 @@ String burnerBlockReason(){
 String json() {
   String s="{\"version\":\"" HEATCONTROL_VERSION "\",\"build\":\"" HEATCONTROL_BUILD_NUMBER "\",\"git\":\"" HEATCONTROL_GIT_SHA "\",\"inputMode\":"+String(inputMode)+",\"potiReady\":"+String(inputMode==1 && sensor[0].valid && sensor[2].valid?"true":"false")+",\"outside\":"+jsonFloat(outsideTemp,1)+",\"room\":"+jsonFloat(roomTemp,1)+
     ",\"boiler\":"+jsonFloat(boilerTemp,1)+",\"setpoint\":"+jsonFloat(desiredBoiler(),1)+
-    ",\"slope\":"+String(slope,2)+",\"targetRoom\":"+String(targetRoom,1)+
+    ",\"slope\":"+String(slope,2)+",\"curveLevel\":"+String(curveLevel,1)+",\"targetRoom\":"+String(targetRoom,1)+
     ",\"scheduleEnabled\":"+String(scheduleEnabled?"true":"false")+
     ",\"holidayActive\":"+String(holidayActive?"true":"false")+
     ",\"clockValid\":"+String(clockValid?"true":"false")+
@@ -1708,6 +1708,7 @@ initProgram();
 setenv("TZ",tzRule,1);
  tzset();
 slope=constrain(prefs.getFloat("slope",1.2f),0.2f,3.f);
+ curveLevel=constrain(prefs.getFloat("curveLevel",0.0f),-15.0f,15.0f);
  targetRoom=prefs.getFloat("roomset",21);
  hysteresis=constrain(prefs.getFloat("hyst",5.f),2.f,15.f);
  minBurnerOnSeconds=constrain((int)prefs.getUInt("minOn",30),0,600);
@@ -2176,6 +2177,7 @@ if(inputMode==0 && server.hasArg("room")){virtualRoom=constrain(server.arg("room
 if(inputMode==0 && server.hasArg("boiler")){virtualBoiler=constrain(server.arg("boiler").toFloat(),0.f,110.f);prefs.putFloat("simBoiler",virtualBoiler);}
 applyPotiTemperatures();
 if(server.hasArg("slope"))slope=constrain(server.arg("slope").toFloat(),0.2f,3.f);
+if(server.hasArg("curveLevel"))curveLevel=constrain(server.arg("curveLevel").toFloat(),-15.0f,15.0f);
 if(server.hasArg("hysteresis"))hysteresis=constrain(server.arg("hysteresis").toFloat(),2.f,15.f);
 if(server.hasArg("minBurnerOn"))minBurnerOnSeconds=constrain(server.arg("minBurnerOn").toInt(),0,600);
 if(server.hasArg("minBurnerOff"))minBurnerOffSeconds=constrain(server.arg("minBurnerOff").toInt(),0,600);
@@ -2184,6 +2186,7 @@ if(server.hasArg("targetRoom")){comfortRoom=constrain(server.arg("targetRoom").t
    }
 automatic=server.arg("automatic")=="1";manualMode=false;manualBurner=false;manualPump=false;
 prefs.putFloat("slope",slope);
+   prefs.putFloat("curveLevel",curveLevel);
    prefs.putFloat("hyst",hysteresis);
    prefs.putUInt("minOn",minBurnerOnSeconds);
    prefs.putUInt("minOff",minBurnerOffSeconds);
