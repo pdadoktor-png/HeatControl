@@ -453,6 +453,80 @@ void tankPersist(){
  prefs.putFloat("tankUsed",tankEstimatedConsumed);
  tankLastSaveMs=millis();
 }
+
+static constexpr const char* TANK_LOG_FILE="/tank-history.csv";
+static uint32_t tankLastLoggedDay=0;
+static bool tankLogDayLoaded=false;
+static uint32_t tankLogErrors=0;
+static uint32_t tankLocalDay(time_t now){
+ struct tm local;
+ if(!localtime_r(&now,&local))return 0;
+ return (uint32_t)(local.tm_year+1900)*10000UL+(uint32_t)(local.tm_mon+1)*100UL+(uint32_t)local.tm_mday;
+}
+static void tankLoadLogDay(){
+ if(tankLogDayLoaded || !historyFS)return;
+ tankLogDayLoaded=true;
+ File f=LittleFS.open(TANK_LOG_FILE,"r");
+ if(!f)return;
+ while(f.available()){
+  String line=f.readStringUntil('\n');
+  unsigned long epoch=0,day=0;
+  if(sscanf(line.c_str(),"%lu,%lu,",&epoch,&day)==2)tankLastLoggedDay=(uint32_t)day;
+ }
+ f.close();
+}
+static void tankLog(const char* reason,bool daily=false){
+ if(!historyFS || !tankLevelKnown)return;
+ time_t now=time(nullptr);
+ if(now<1700000000)return;
+ tankLoadLogDay();
+ const uint32_t day=tankLocalDay(now);
+ if(!day || (daily && day==tankLastLoggedDay))return;
+ File f=LittleFS.open(TANK_LOG_FILE,"a");
+ if(!f){tankLogErrors++;return;}
+ // Bounded log: stop at 512 KB, never erase existing history automatically.
+ if(f.size()>=512UL*1024UL){f.close();tankLogErrors++;return;}
+ if(f.size()==0)f.print("epoch,local_day,liters,event\\n");
+ size_t written=f.printf("%lu,%lu,%.1f,%s\\n",(unsigned long)now,(unsigned long)day,tankLiters,reason);
+ f.close();
+ if(written) tankLastLoggedDay=day;
+ else tankLogErrors++;
+}
+static void tankHistorySend(bool csv){
+ if(!historyFS){server.send(503,"text/plain","LittleFS nicht verfuegbar");return;}
+ server.sendHeader("Cache-Control","no-store");
+ File f=LittleFS.open(TANK_LOG_FILE,"r");
+ if(!f){server.send(200,csv?"text/csv; charset=utf-8":"application/json",csv?"epoch,local_day,liters,event\\n":"[]");return;}
+ if(csv)server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-tankverlauf.csv");
+ server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+ server.send(200,csv?"text/csv; charset=utf-8":"application/json","");
+ String chunk;
+ chunk.reserve(2048);
+ if(!csv)chunk="[";
+ bool first=true;
+ while(f.available()){
+  String line=f.readStringUntil('\n');
+  line.trim();
+  if(!line.length())continue;
+  if(csv){
+   chunk+=line+"\\n";
+  }else{
+   unsigned long epoch=0,day=0;
+   float liters=0;
+   char event[24]={0};
+   if(sscanf(line.c_str(),"%lu,%lu,%f,%23[^\\r\\n]",&epoch,&day,&liters,event)!=4)continue;
+   if(!first)chunk+=",";
+   first=false;
+   chunk+="{\\"t\\":"+String(epoch)+",\\"day\\":"+String(day)+",\\"liters\\":"+String(liters,1)+",\\"event\\":\\""+String(event)+"\\"}";
+  }
+  if(chunk.length()>=1800){server.sendContent(chunk);chunk="";}
+ }
+ f.close();
+ if(!csv)chunk+="]";
+ if(chunk.length())server.sendContent(chunk);
+ server.sendContent("");
+}
+
 String tankJson(){
   return String("{\"capacity\":4200,\"levelKnown\":")+(tankLevelKnown?"true":"false")+
     ",\"liters\":"+String(tankLiters,1)+",\"percent\":"+String(tankLevelKnown?tankLiters*100.0f/TANK_CAPACITY_L:0,1)+
@@ -2068,6 +2142,8 @@ oilLitersPerHour=v;
    prefs.putFloat("oilRate",v);
    server.send(200,"application/json",historyStatusJson());
 });
+server.on("/api/tank/history",HTTP_GET,[]{tankHistorySend(false);});
+server.on("/api/tank/history.csv",HTTP_GET,[]{tankHistorySend(true);});
 server.on("/api/tank",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send(200,"application/json",tankJson());});
  server.on("/api/tank",HTTP_POST,[]{
 String action=server.arg("action"),value=server.arg("liters");
@@ -2108,6 +2184,7 @@ prefs.putFloat("tankLast",tankLastDeliveryL);
    return;
    }
 tankPersist();
+   tankLog(action=="delivery"?"delivery":"set");
    prefs.putBool("tankKnown",tankLevelKnown);
 server.send(200,"application/json",tankJson());
 });
@@ -2430,6 +2507,7 @@ if(burnerDemand && !previousDemand)burnerStarts++;
 if(tankLevelKnown && (uint32_t)(millis()-tankLastSaveMs)>=300000UL)tankPersist();
 if(lastHistoryMs==0 || (uint32_t)(millis()-lastHistoryMs)>=300000UL){lastHistoryMs=millis();
    historySample();
+   tankLog("daily",true);
    }
 if(lastCounterSaveMs==0 || (uint32_t)(millis()-lastCounterSaveMs)>=600000UL){lastCounterSaveMs=millis();
    prefs.putUInt("burnStarts",burnerStarts);
