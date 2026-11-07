@@ -486,8 +486,8 @@ static void tankLog(const char* reason,bool daily=false){
  if(!f){tankLogErrors++;return;}
  // Bounded log: stop at 512 KB, never erase existing history automatically.
  if(f.size()>=512UL*1024UL){f.close();tankLogErrors++;return;}
- if(f.size()==0)f.print("epoch,local_day,liters,event\\n");
- size_t written=f.printf("%lu,%lu,%.1f,%s\\n",(unsigned long)now,(unsigned long)day,tankLiters,reason);
+ if(f.size()==0)f.print("epoch,local_day,liters,event\n");
+ size_t written=f.printf("%lu,%lu,%.1f,%s\n",(unsigned long)now,(unsigned long)day,tankLiters,reason);
  f.close();
  if(written) tankLastLoggedDay=day;
  else tankLogErrors++;
@@ -496,7 +496,7 @@ static void tankHistorySend(bool csv){
  if(!historyFS){server.send(503,"text/plain","LittleFS nicht verfuegbar");return;}
  server.sendHeader("Cache-Control","no-store");
  File f=LittleFS.open(TANK_LOG_FILE,"r");
- if(!f){server.send(200,csv?"text/csv; charset=utf-8":"application/json",csv?"epoch,local_day,liters,event\\n":"[]");return;}
+ if(!f){server.send(200,csv?"text/csv; charset=utf-8":"application/json",csv?"epoch,local_day,liters,event\n":"[]");return;}
  if(csv)server.sendHeader("Content-Disposition","attachment; filename=heatcontrol-tankverlauf.csv");
  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
  server.send(200,csv?"text/csv; charset=utf-8":"application/json","");
@@ -509,15 +509,15 @@ static void tankHistorySend(bool csv){
   line.trim();
   if(!line.length())continue;
   if(csv){
-   chunk+=line+"\\n";
+   chunk+=line+"\n";
   }else{
    unsigned long epoch=0,day=0;
    float liters=0;
    char event[24]={0};
-   if(sscanf(line.c_str(),"%lu,%lu,%f,%23[^\\r\\n]",&epoch,&day,&liters,event)!=4)continue;
+   if(sscanf(line.c_str(),"%lu,%lu,%f,%23[^\r\n]",&epoch,&day,&liters,event)!=4)continue;
    if(!first)chunk+=",";
    first=false;
-   chunk+="{\\"t\\":"+String(epoch)+",\\"day\\":"+String(day)+",\\"liters\\":"+String(liters,1)+",\\"event\\":\\""+String(event)+"\\"}";
+   chunk+="{\"t\":"+String(epoch)+",\"day\":"+String(day)+",\"liters\":"+String(liters,1)+",\"event\":\""+String(event)+"\"}";
   }
   if(chunk.length()>=1800){server.sendContent(chunk);chunk="";}
  }
