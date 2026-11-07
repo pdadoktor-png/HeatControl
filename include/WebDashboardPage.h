@@ -17,7 +17,7 @@ body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin
 <div id="tankState">Lade Tankdaten ...</div><div style="height:18px;background:#0f1a26;border-radius:9px;overflow:hidden;margin:12px 0"><div id="tankBar" style="height:100%;background:#50b6ab;width:0%"></div></div>
 <label>Aktueller Bestand (Liter) <input id="tankLiters" type="number" min="0" max="4200" step="1" placeholder="unbekannt"></label><button onclick="setTankLevel()">Bestand speichern</button>
 <p><label>Neue Heizöllieferung (Liter) <input id="tankDelivery" type="number" min="1" max="4200" step="1"></label><button onclick="addTankDelivery()">Lieferung hinzubuchen</button></p>
-<p><small>Lieferung nur buchen, wenn ein Anfangsbestand gespeichert wurde. Die Anzahl der Lieferungen und die letzte Menge werden gespeichert; Lieferungen und Bestandsaenderungen werden im Ereignisprotokoll erfasst.</small></p></section>
+<p><small>Lieferung nur buchen, wenn ein Anfangsbestand gespeichert wurde. Die Anzahl der Lieferungen und die letzte Menge werden gespeichert; Lieferungen und Bestandsaenderungen werden im Ereignisprotokoll erfasst.</small></p><h4>Tankinhalt im Zeitverlauf</h4><p><label>Zeitraum <select id="tankRange" onchange="loadTankHistory()"><option value="7">7 Tage</option><option value="30">30 Tage</option><option value="90">90 Tage</option><option value="365" selected>1 Jahr</option><option value="0">Gesamter Verlauf</option></select></label> <a href="/api/tank/history.csv">Tankverlauf als CSV herunterladen</a></p><div id="tankHistoryInfo">Noch keine Verlaufsmesswerte</div><svg id="tankHistorySvg" viewBox="0 0 700 300" style="width:100%;height:auto;background:#142335;border-radius:10px" aria-label="Tankinhalt in Litern"></svg><div id="tankHistoryCursor">Messpunkt auswählen</div></section>
 <section id="slope" class="tab"><h3>Steilheit ermitteln</h3>
 <p>Gefuehrter Test: HeatControl darf nach ausdruecklichem Start die Kessel-Solltemperatur alle drei Stunden um hoechstens 1 °C veraendern. Die gesamte Abweichung ist auf ±6 °C begrenzt. Die gespeicherte Steilheit wird nicht geaendert.</p>
 <p class="warn">Nur am Niedervolt-Pruefstand erprobt. Keine Freigabe zum Betrieb an einem realen Oelbrenner. Bei Sensorfehlern oder fehlender Freigabe stoppt der Versuch.</p>
@@ -46,7 +46,7 @@ body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin
 <script>
 let init=false,program=null,loadedProgram=false,simRunning=false,simBusy=false;const $=id=>document.getElementById(id);
 function feedback(msg){let x=document.getElementById('feedback');if(x)x.textContent=msg;}
-function tab(id){const enteringStats=id==='stats'&&!$('stats').classList.contains('sel');const enteringSchedule=id==='schedule'&&!$('schedule').classList.contains('sel');if(enteringSchedule&&program){if(currentDay>=0)collectPhases(currentDay);$('day').value=(new Date().getDay()+6)%7;renderPhases();}document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('sel',x.id===id));document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('sel',x.getAttribute('onclick')==="tab('"+id+"')"));if(enteringStats)loadStats();}
+function tab(id){const enteringStats=id==='stats'&&!$('stats').classList.contains('sel');const enteringSchedule=id==='schedule'&&!$('schedule').classList.contains('sel');if(enteringSchedule&&program){if(currentDay>=0)collectPhases(currentDay);$('day').value=(new Date().getDay()+6)%7;renderPhases();}document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('sel',x.id===id));document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('sel',x.getAttribute('onclick')==="tab('"+id+"')"));if(enteringStats)loadStats();if(id==='tank'&&!$('tank').dataset.historyLoaded){$('tank').dataset.historyLoaded='1';loadTankHistory();}}
 function drawHeatingCurve(j){
  const svg=$('curveSvg');if(!svg)return;
  const W=640,H=315,L=58,R=20,T=20,B=46;
@@ -180,9 +180,45 @@ async function resetStatistics(){
  catch(e){feedback('Zuruecksetzen fehlgeschlagen: '+e.message)}
 }
 async function loadEvents(){try{const j=await(await fetch('/api/events',{cache:'no-store'})).json();const filter=$('eventFilter').value;const rows=j.events.filter(e=>!filter||e.type===filter).reverse();$('eventInfo').textContent=rows.length+' Ereignisse | Speicher: '+j.storage+' | Schreibfehler: '+j.writeErrors;$('eventRows').replaceChildren();for(const e of rows){const div=document.createElement('div');div.style.cssText='padding:7px;border-bottom:1px solid #456';const stamp=e.t?new Date(e.t*1000).toLocaleString('de-DE'):'Uptime '+e.uptime+' s';div.textContent=stamp+' | '+e.type+' | '+e.detail;$('eventRows').appendChild(div)}}catch(e){$('eventInfo').textContent='Fehler: '+e.message}}
+
+let tankHistoryBusy=false;
+async function loadTankHistory(){
+ if(tankHistoryBusy)return;
+ tankHistoryBusy=true;
+ try{
+  const r=await fetch('/api/tank/history',{cache:'no-store'});
+  if(!r.ok)throw Error('HTTP '+r.status);
+  const all=await r.json();
+  const days=Number($('tankRange').value);
+  const cutoff=days?Date.now()/1000-days*86400:0;
+  const data=all.filter(p=>p.t>=cutoff);
+  const svg=$('tankHistorySvg'),W=700,H=300,L=55,R=18,T=18,B=42;
+  const x=(t)=>L+(t-minT)/Math.max(1,maxT-minT)*(W-L-R);
+  const y=(v)=>T+(4200-v)/4200*(H-T-B);
+  const minT=data.length?data[0].t:0,maxT=data.length?data[data.length-1].t:1;
+  let html='';
+  for(let v=0;v<=4200;v+=700)html+=`<line x1="${L}" y1="${y(v)}" x2="${W-R}" y2="${y(v)}" stroke="#3a4e61"/><text x="${L-8}" y="${y(v)+4}" text-anchor="end" fill="#c5d3e0" font-size="12">${v}</text>`;
+  if(data.length){
+   const pts=data.map(p=>x(p.t).toFixed(1)+','+y(p.liters).toFixed(1)).join(' ');
+   html+=`<polyline points="${pts}" fill="none" stroke="#50b6ab" stroke-width="3"/>`;
+   for(const p of data.filter(p=>p.event!=='daily'))html+=`<circle cx="${x(p.t)}" cy="${y(p.liters)}" r="4" fill="#ffb454"/>`;
+   for(let k=0;k<=4;k++){const t=minT+(maxT-minT)*k/4;html+=`<text x="${x(t)}" y="${H-10}" text-anchor="middle" fill="#c5d3e0" font-size="11">${new Date(t*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})}</text>`;}
+  }
+  svg.innerHTML=html;
+  $('tankHistoryInfo').textContent=data.length+' Messpunkte im gewählten Zeitraum (gespeicherte Bestände, keine rückwirkende Berechnung)';
+  svg.onpointermove=e=>{
+   if(!data.length)return;
+   const rect=svg.getBoundingClientRect(),px=(e.clientX-rect.left)*W/rect.width;
+   let best=data[0];for(const p of data)if(Math.abs(x(p.t)-px)<Math.abs(x(best.t)-px))best=p;
+   $('tankHistoryCursor').textContent=new Date(best.t*1000).toLocaleString('de-DE')+' | '+best.liters.toFixed(1)+' L | '+({daily:'Tageswert',set:'Bestand gesetzt',delivery:'Lieferung'}[best.event]||best.event);
+  };
+ }catch(e){$('tankHistoryInfo').textContent='Tankverlauf nicht verfügbar: '+e.message;}
+ finally{tankHistoryBusy=false;}
+}
+
 async function loadTank(){try{const j=await(await fetch('/api/tank',{cache:'no-store'})).json();$('tankState').textContent=j.levelKnown?`${j.liters.toFixed(0)} / ${j.capacity.toFixed(0)} Liter (${j.percent.toFixed(1)} %) | letzte Lieferung: ${j.lastDelivery.toFixed(0)} L | Buchungen: ${j.deliveryCount}`:'Tankbestand noch nicht erfasst';$('tankBar').style.width=(j.levelKnown?j.percent:0)+'%';}catch(e){$('tankState').textContent='Tankdaten nicht verfügbar: '+e.message}}
-async function setTankLevel(){if(await post('/api/tank',{action:'set',liters:$('tankLiters').value}))await loadTank()}
-async function addTankDelivery(){if(!confirm('Heizöllieferung zum gespeicherten Bestand addieren?'))return;if(await post('/api/tank',{action:'delivery',liters:$('tankDelivery').value})){ $('tankDelivery').value='';await loadTank()}}
+async function setTankLevel(){if(await post('/api/tank',{action:'set',liters:$('tankLiters').value}))await loadTank();await loadTankHistory()}
+async function addTankDelivery(){if(!confirm('Heizöllieferung zum gespeicherten Bestand addieren?'))return;if(await post('/api/tank',{action:'delivery',liters:$('tankDelivery').value})){ $('tankDelivery').value='';await loadTank();await loadTankHistory()}}
 let statusLoading=false;
 async function load(){if(statusLoading)return;statusLoading=true;try{let j=await(await fetch('/api/status',{cache:'no-store'})).json();simRunning=!!j.simulationRunning;$('firmwareBuild').textContent='Version '+(j.version||'0.5.9.2')+' | Build '+(j.build||'?')+' | Git '+(j.git||'?');$('regulationStatus').textContent='Regelung: '+(simRunning?'AKTIV':'GESPERRT');$('simButton').textContent=simRunning?'Regelung STOPPEN':'Regelung STARTEN';$('simButton').disabled=false;const shown=displayedTemperatures(j);$('simulationTempFields').style.display=j.inputMode===0?'inline':'none';const phaseText=!j.scheduleEnabled?'Schaltuhr AUS':!j.clockValid?'Schaltuhr EIN – Uhrzeit ungültig':j.holidayActive?'Schaltuhr EIN – Urlaubsbetrieb':j.activePhase>=0?'Schaltuhr EIN – Phase '+(j.activePhase+1)+' AKTIV (Komfort)':'Schaltuhr EIN – keine Phase aktiv (Absenkung)';$('scheduleState').textContent=phaseText+' | Bezugstemperatur: '+j.targetRoom+' °C';$('manualState').textContent=j.manualMode?'HAND – Brenner '+(j.burnerDemand?'EIN':'AUS')+' / Pumpe '+(j.pumpDemand?'EIN':'AUS'):'AUTOMATIK';$('state').innerHTML=`Außen: ${shown.outside} °C<br>Raum: ${shown.room} °C<br>Kessel: ${shown.boiler} °C<br>Heizkurve Soll: ${j.setpoint} °C<br>Kessel EIN-Schwelle: ${(Number(j.setpoint)-Number(j.hysteresis)/2).toFixed(1)} °C<br>Kessel AUS-Schwelle: ${(Number(j.setpoint)+Number(j.hysteresis)/2).toFixed(1)} °C<br>Heizkurven-Bezugstemperatur: ${j.targetRoom} °C (einstellbar unter Schaltuhr: Komfort / Absenkung / Urlaub)<br>Brenner virtuell: <b>${j.burnerDemand?'EIN':'AUS'}</b><br>Pumpe virtuell: <b>${j.pumpDemand?'EIN':'AUS'}</b> – ${j.pumpReason}${j.pumpReason==='Pumpennachlauf'?' ('+j.pumpOverrunRemaining+' s)':''}<br>Mindestlaufzeit: ${j.minBurnerOn} s / Mindestpause: ${j.minBurnerOff} s<br>Schaltsperre verbleibend: ${j.burnerLockRemaining} s<br>Sensorbetrieb: ${j.inputMode===1?'Reale Sensoren':'Software'}<br>Regelung: ${j.simulationRunning?'AKTIV':'GESPERRT'}<br>Brennerhinweis: <b>${j.burnerBlockReason}</b><br>Uhrzeit: ${j.clockText||'--:--'}<br>Urlaub: ${j.holidayActive?'AKTIV':'inaktiv'}<br>Brennerstarts: ${j.burnerStarts}<br>Brennerlaufzeit: ${formatDuration(j.burnerSeconds)}<br>Ölverbrauch (geschätzt): ${j.oilEstimate} l bei ${j.oilRate} l/h<br>Betriebsdauer: ${formatDuration(j.simulationSeconds)}`; if(document.activeElement!==$('inputMode'))$('inputMode').value=j.inputMode;if(!init){for(let k of ['outside','room','boiler','slope','curveLevel','hysteresis','minBurnerOn','minBurnerOff'])$(k).value=j[k];$('automatic').checked=j.automatic;for(let k of ['pumpMode','pumpOverrun','summerCutoff','frostThreshold'])$(k).value=j[k];init=true}$('pumpState').innerHTML='Virtuelle Pumpe: <b>'+(j.pumpDemand?'EIN':'AUS')+'</b> – '+j.pumpReason+'<br>Witterungsheizbetrieb: '+(j.pumpHeatRequest?'JA':'NEIN')+'<br>Frostanforderung: '+(j.pumpFrostRequest?'JA':'NEIN')+'<br>Sommergrenze erreicht: '+(j.pumpSummerLock?'JA':'NEIN')+'<br>Nachlauf verbleibend: '+j.pumpOverrunRemaining+' s';if(!loadedProgram){await loadProgram();loadedProgram=true}await loadSensors();await loadRelayDiagnostics();drawHeatingCurve(j);await loadTank();}catch(e){$('state').textContent='Verbindung fehlgeschlagen: '+e}finally{statusLoading=false}}
 async function loadRelayDiagnostics(){try{const r=await fetch('/api/relay',{cache:'no-store'});const j=await r.json();$('relayDiag').textContent='PCF8574 (0x20): '+(j.present?'ERKANNT':'NICHT ANGESCHLOSSEN')+' | ADS1115: 0x48 | Brenneranforderung: '+(j.burnerDemand?'EIN':'AUS')+' | Pumpenanforderung: '+(j.pumpDemand?'EIN':'AUS')+' | Relais: '+(j.outputsEnabled?'PRUEFSTAND':'GESPERRT')+' | I2C-Fehler: '+j.errors;}catch(e){$('relayDiag').textContent='Diagnose nicht verfuegbar: '+e.message;}}
