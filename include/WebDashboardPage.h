@@ -191,9 +191,9 @@ async function loadTankHistory(){
   const all=await r.json();
   const days=Number($('tankRange').value);
   const cutoff=days?Date.now()/1000-days*86400:0;
-  const data=all.filter(p=>p.t>=cutoff);
+  const data=all.filter(p=>p.t>=cutoff).sort((a,b)=>a.t-b.t);
   const svg=$('tankHistorySvg'),W=700,H=300,L=55,R=18,T=18,B=42;
-  const x=(t)=>L+(t-minT)/Math.max(1,maxT-minT)*(W-L-R);
+  const x=(t)=>data.length===1?(L+W-R)/2:L+(t-minT)/Math.max(1,maxT-minT)*(W-L-R);
   const y=(v)=>T+(4200-v)/4200*(H-T-B);
   const minT=data.length?data[0].t:0,maxT=data.length?data[data.length-1].t:1;
   let html='';
@@ -201,17 +201,35 @@ async function loadTankHistory(){
   if(data.length){
    const pts=data.map(p=>x(p.t).toFixed(1)+','+y(p.liters).toFixed(1)).join(' ');
    html+=`<polyline points="${pts}" fill="none" stroke="#50b6ab" stroke-width="3"/>`;
-   for(const p of data.filter(p=>p.event!=='daily'))html+=`<circle cx="${x(p.t)}" cy="${y(p.liters)}" r="4" fill="#ffb454"/>`;
+   for(const p of data)html+=`<circle cx="${x(p.t)}" cy="${y(p.liters)}" r="${data.length===1?6:3}" fill="${p.event==='daily'?'#50b6ab':'#ffb454'}"/>`;
    for(let k=0;k<=4;k++){const t=minT+(maxT-minT)*k/4;html+=`<text x="${x(t)}" y="${H-10}" text-anchor="middle" fill="#c5d3e0" font-size="11">${new Date(t*1000).toLocaleDateString('de-DE',{day:'2-digit',month:'2-digit',year:'2-digit'})}</text>`;}
   }
   svg.innerHTML=html;
   $('tankHistoryInfo').textContent=data.length+' Messpunkte im gewählten Zeitraum (gespeicherte Bestände, keine rückwirkende Berechnung)';
+  const readout=$('tankHistoryCursor');
+  const showPoint=p=>{
+   const stamp=new Date(p.t*1000).toLocaleString('de-DE');
+   readout.textContent=stamp+' | '+p.liters.toFixed(1)+' L | '+({daily:'Tageswert',set:'Bestand gesetzt',delivery:'Lieferung'}[p.event]||p.event);
+   const px=x(p.t),py=y(p.liters);
+   const label=p.liters.toFixed(1)+' L  ·  '+stamp;
+   const boxX=Math.max(L,Math.min(W-R-235,px-112));
+   const boxY=Math.max(5,py-55);
+   const safe=label.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+   const previous=svg.querySelector('#tankHover');
+   if(previous)previous.remove();
+   svg.insertAdjacentHTML('beforeend',`<g id="tankHover" pointer-events="none"><line x1="${px}" y1="${T}" x2="${px}" y2="${H-B}" stroke="#dce9f4" stroke-dasharray="4 4" opacity=".65"/><circle cx="${px}" cy="${py}" r="6" fill="#ffb454" stroke="#fff" stroke-width="2"/><rect x="${boxX}" y="${boxY}" width="235" height="29" rx="5" fill="#eef5fa"/><text x="${boxX+9}" y="${boxY+19}" fill="#172536" font-size="12">${safe}</text></g>`);
+  };
+  if(data.length)showPoint(data[data.length-1]);
+  else readout.textContent='Noch keine gespeicherten Messpunkte für diesen Zeitraum';
   svg.onpointermove=e=>{
    if(!data.length)return;
-   const rect=svg.getBoundingClientRect(),px=(e.clientX-rect.left)*W/rect.width;
-   let best=data[0];for(const p of data)if(Math.abs(x(p.t)-px)<Math.abs(x(best.t)-px))best=p;
-   $('tankHistoryCursor').textContent=new Date(best.t*1000).toLocaleString('de-DE')+' | '+best.liters.toFixed(1)+' L | '+({daily:'Tageswert',set:'Bestand gesetzt',delivery:'Lieferung'}[best.event]||best.event);
+   const rect=svg.getBoundingClientRect();
+   const px=(e.clientX-rect.left)*W/rect.width;
+   let best=data[0];
+   for(const p of data)if(Math.abs(x(p.t)-px)<Math.abs(x(best.t)-px))best=p;
+   showPoint(best);
   };
+  svg.onpointerleave=()=>{if(data.length)showPoint(data[data.length-1]);};
  }catch(e){$('tankHistoryInfo').textContent='Tankverlauf nicht verfügbar: '+e.message;}
  finally{tankHistoryBusy=false;}
 }
