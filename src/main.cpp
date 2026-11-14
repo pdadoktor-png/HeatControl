@@ -1186,6 +1186,23 @@ lv_obj_t *l=lv_label_create(b);
 // Touch-Kalibrierung auf Basis der bereits vom Smartdisplay-Treiber gelieferten
 // Koordinaten. Drei Punkte ergeben eine affine Korrektur (auch Achsentausch).
 // KEINE Aenderung am XPT2046-Treiber und an dessen SPI-GPIOs.
+// LCD dimming only; regulation and web services continue normally.
+static uint8_t lcdBrightness=80;
+static uint16_t lcdTimeoutSec=120; // 0 = always on
+static uint32_t lcdLastTouchMs=0;
+static bool lcdSleeping=false;
+static void lcdApplyBrightness(){
+ smartdisplay_lcd_set_backlight(lcdSleeping?0.0f:(float)lcdBrightness/100.0f);
+}
+static void lcdWake(){
+ lcdLastTouchMs=millis();
+ if(lcdSleeping){lcdSleeping=false;lcdApplyBrightness();}
+}
+static void lcdIdleTick(){
+ if(lcdTimeoutSec && !lcdSleeping && (uint32_t)(millis()-lcdLastTouchMs)>=(uint32_t)lcdTimeoutSec*1000UL){
+  lcdSleeping=true;lcdApplyBrightness();
+ }
+}
 static lv_indev_t *calIndev=nullptr;
 static lv_indev_read_cb_t originalTouchRead=nullptr;
 static bool touchCalActive=false, touchCalRequested=false, touchCalResetRequested=false;
@@ -1200,6 +1217,9 @@ static float touchAffine[6]={1,0,0,0,1,0};
 static void touchReadCalibrated(lv_indev_t *indev, lv_indev_data_t *data){
 originalTouchRead(indev,data);
   if(data->state==LV_INDEV_STATE_PRESSED){
+    const bool wasSleeping=lcdSleeping;
+    lcdWake();
+    if(wasSleeping){data->state=LV_INDEV_STATE_RELEASED;touchCalWasDown=true;return;}
 const lv_point_t raw=data->point;
     if(touchCalActive){
       // Ein Punkt je Beruehrung, 300ms Entprellung. Keine LVGL-Objekte im Callback aendern.
@@ -1325,7 +1345,7 @@ static void initDisplay(){
 Serial.println("DISPLAY: smartdisplay_init begin");
 smartdisplay_init();
 Serial.println("DISPLAY: smartdisplay_init done");
-smartdisplay_lcd_set_backlight(1.0f);
+lcdLastTouchMs=millis();lcdApplyBrightness();
 touchCalInstall();
 lv_obj_t *screen=lv_scr_act();
 lv_obj_set_style_bg_color(screen,lv_color_hex(0x142434),0);
@@ -1770,6 +1790,8 @@ tankLastDeliveryL=prefs.getFloat("tankLast",0);
 tankDeliveryCount=prefs.getUInt("tankCount",0);
 tankEstimatedConsumed=max(0.0f,prefs.getFloat("tankUsed",0.0f));
 oilLitersPerHour=constrain(prefs.getFloat("oilRate",2.0f),0.1f,20.f);
+lcdBrightness=(uint8_t)constrain((int)prefs.getUChar("lcdBright",80),10,100);
+lcdTimeoutSec=(uint16_t)constrain((int)prefs.getUInt("lcdTimeout",120),0,3600);
 historyInit();
 eventLoadFromFlash();
 eventLog("SYSTEM","Neustart; PCF8574 wird initialisiert; Niedervolt-Pruefstand");
@@ -1800,6 +1822,19 @@ configTzTime(tzRule,"pool.ntp.org","time.google.com");
  }
 Serial.print("Test-WLAN HeatControl-Test, Browser: http://");
  Serial.println(WiFi.softAPIP());
+server.on("/api/display",HTTP_GET,[]{
+ server.sendHeader("Cache-Control","no-store");
+ server.send(200,"application/json",String("{\"brightness\":")+String(lcdBrightness)+",\"timeout\":"+String(lcdTimeoutSec)+",\"sleeping\":"+(lcdSleeping?"true":"false")+"}");
+});
+server.on("/api/display",HTTP_POST,[]{
+ if(!server.hasArg("brightness") || !server.hasArg("timeout")){server.send(400,"text/plain","Helligkeit und Zeit fehlen");return;}
+ const int bright=server.arg("brightness").toInt(),timeout=server.arg("timeout").toInt();
+ if(bright<10||bright>100||timeout<0||timeout>3600){server.send(400,"text/plain","Ungueltige Display-Einstellung");return;}
+ lcdBrightness=(uint8_t)bright;lcdTimeoutSec=(uint16_t)timeout;
+ prefs.putUChar("lcdBright",lcdBrightness);prefs.putUInt("lcdTimeout",lcdTimeoutSec);
+ lcdWake();lcdApplyBrightness();
+ server.send(200,"application/json",String("{\"brightness\":")+String(lcdBrightness)+",\"timeout\":"+String(lcdTimeoutSec)+"}");
+});
 server.on("/",HTTP_GET,[]{server.sendHeader("Cache-Control","no-store");server.send_P(200,"text/html; charset=utf-8",PAGE);});
 server.on("/api/slope-points.csv",HTTP_GET,[]{
  if(!historyFS || !LittleFS.exists(SLOPE_POINTS_FILE)){server.send(404,"text/plain","Noch keine Optimierungs-Messpunkte");return;}
@@ -2443,6 +2478,7 @@ lv_tick_inc(now-prevTick);
  prevTick=now;
 diagBegin();
 lv_timer_handler();
+lcdIdleTick();
 diagEnd("LVGL");
 diagBegin();
 touchCalService();
