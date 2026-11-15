@@ -1134,8 +1134,12 @@ saveProgram();
 }
 static void adjustScheduleRoom(lv_event_t *e){
 int direction=(int)(intptr_t)lv_event_get_user_data(e);
-float &value=(abs(direction)==1)?comfortRoom:reducedRoom;
-value=roundf(constrain(value+(direction<0?-0.5f:0.5f),10.0f,28.0f)*2.0f)/2.0f;
+if(abs(direction)==1){
+ uint8_t &half=phaseTempHalf[selectedDay][selectedPhase];
+ half=(uint8_t)constrain((int)half+(direction<0?-1:1),20,56);
+}else{
+ reducedRoom=roundf(constrain(reducedRoom+(direction<0?-0.5f:0.5f),10.0f,28.0f)*2.0f)/2.0f;
+}
 saveProgram();
 }
 static void adjustHolidayTemp(lv_event_t *e){holidayRoom=constrain(holidayRoom+(float)(intptr_t)lv_event_get_user_data(e)*0.5f,10.f,20.f);
@@ -1455,8 +1459,8 @@ makeButton(schedule,"Bis -",188,122,82,adjustPhase,1);
 makeButton(schedule,"Bis +",278,122,82,adjustPhase,2);
 makeButton(schedule,"Phase EIN/AUS",8,170,160,togglePhase,0);
 makeButton(schedule,"Plan EIN/AUS",178,170,160,toggleSchedule,0);
-makeButton(schedule,"Komf -",8,205,108,adjustScheduleRoom,-1);
-makeButton(schedule,"Komf +",128,205,108,adjustScheduleRoom,1);
+makeButton(schedule,"Phase °C -",8,205,108,adjustScheduleRoom,-1);
+makeButton(schedule,"Phase °C +",128,205,108,adjustScheduleRoom,1);
 makeButton(schedule,"Absenk -",248,205,108,adjustScheduleRoom,-2);
 makeButton(schedule,"Absenk +",368,205,108,adjustScheduleRoom,2);
 scheduleFeedback=makeLabel(schedule,"Bereit",8,57);
@@ -1571,9 +1575,9 @@ feedbackUntil=0;
   }
   if(schedInfo){
 Phase &p=phases[selectedDay][selectedPhase];
-    snprintf(buffer,sizeof(buffer),"SCHALTUHR: %s  Zeit: %s\nTag %d  Phase %d: %02d:%02d - %02d:%02d  %s\nKomfort %.1f C  Absenk %.1f C",
+    snprintf(buffer,sizeof(buffer),"SCHALTUHR: %s  Zeit: %s\nTag %d  Phase %d: %02d:%02d - %02d:%02d  %s\nPhase-Soll %.1f C  Absenk %.1f C",
       scheduleEnabled?"EIN":"AUS",clockValid?"OK":"FEHLT",selectedDay+1,selectedPhase+1,
-p.from/60,p.from%60,p.to/60,p.to%60,p.enabled?"EIN":"AUS",comfortRoom,reducedRoom);
+p.from/60,p.from%60,p.to/60,p.to%60,p.enabled?"EIN":"AUS",phaseTempHalf[selectedDay][selectedPhase]*0.5f,reducedRoom);
 lv_label_set_text(schedInfo,buffer);
   }
   if(holidayInfo){
