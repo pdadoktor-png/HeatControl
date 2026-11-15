@@ -85,6 +85,7 @@ uint16_t to;
 bool enabled;
 };
 Phase phases[7][3];
+uint8_t phaseTempHalf[7][3]; // temperature in 0.5 C units, independent of legacy phase layout
 int selectedDay=0, selectedPhase=0;
 int64_t holidayStart=0, holidayEnd=0;
 // Unix-Sekunden, Endzeit exklusiv
@@ -788,13 +789,17 @@ holidayActive=holidayStart>0 && holidayEnd>holidayStart && now>=holidayStart && 
 if(holidayActive){targetRoom=holidayRoom;
   comfortActive=false;
   }
-else if(scheduleEnabled){comfortActive=inPhase(dayIndex(t),minuteNow(t));
-  targetRoom=comfortActive?comfortRoom:reducedRoom;
+else if(scheduleEnabled){
+  const int d=dayIndex(t),minute=minuteNow(t);
+  const int phase=activeSchedulePhase();
+  comfortActive=phase>=0;
+  targetRoom=comfortActive?phaseTempHalf[d][phase]*0.5f:reducedRoom;
   }
 else targetRoom=comfortRoom;
 }
 void saveProgram(){
 prefs.putBytes("phases",phases,sizeof(phases));
+prefs.putBytes("phaseTemps",phaseTempHalf,sizeof(phaseTempHalf));
 prefs.putBool("schedule",scheduleEnabled);
   prefs.putBool("holiday",holidayEnabled);
 prefs.putFloat("comfort",comfortRoom);
@@ -810,6 +815,10 @@ phases[d][0]={360,540,true};
     phases[d][2]={0,0,false};
   }
 if(prefs.getBytesLength("phases")==sizeof(phases))prefs.getBytes("phases",phases,sizeof(phases));
+const uint8_t defaultHalf=(uint8_t)constrain((int)roundf(prefs.getFloat("comfort",21.0f)*2),20,56);
+for(auto &day:phaseTempHalf)for(auto &v:day)v=defaultHalf;
+if(prefs.getBytesLength("phaseTemps")==sizeof(phaseTempHalf))prefs.getBytes("phaseTemps",phaseTempHalf,sizeof(phaseTempHalf));
+for(auto &day:phaseTempHalf)for(auto &v:day)if(v<20||v>56)v=defaultHalf;
 for(auto &day:phases)for(auto &p:day){if(p.from>1439||p.to>1440||p.from>=p.to){p.enabled=false;
   p.from=0;
   p.to=0;
@@ -837,7 +846,7 @@ if(d)out+=",";
     out+="[";
     for(int i=0;i<3;i++){
 if(i)out+=",";
-out+="["+String(phases[d][i].from)+","+String(phases[d][i].to)+","+String(phases[d][i].enabled?1:0)+"]";
+out+="["+String(phases[d][i].from)+","+String(phases[d][i].to)+","+String(phases[d][i].enabled?1:0)+","+String(phaseTempHalf[d][i])+"]";
     }
 out+="]";
   }
@@ -2335,11 +2344,11 @@ server.send(200,"application/json",json());
 if(!server.hasArg("days")){server.send(400,"text/plain","days fehlt");
    return;
    }
-   // Kompaktes JSON-Array: exakt 7 Tage x 3 Phasen x 3 Integer, keine externen Parser.
+   // Kompaktes JSON-Array: exakt 7 Tage x 3 Phasen x 4 Integer (alt: 3), keine externen Parser.
 String raw=server.arg("days");
-   int values[63],n=0;
+   int values[84],n=0;
    int pos=0;
-   while(pos<(int)raw.length() && n<63){
+   while(pos<(int)raw.length() && n<84){
      if(raw[pos]=='-' || isdigit((unsigned char)raw[pos])){
 int next=pos+1;
        while(next<(int)raw.length()&&isdigit((unsigned char)raw[next]))next++;
@@ -2350,10 +2359,11 @@ else{server.send(400,"text/plain","ungueltiges JSON");
      return;
      }
    }
-if(n!=63){server.send(400,"text/plain","erwartet 63 Werte");
+if(n!=63 && n!=84){server.send(400,"text/plain","erwartet 63 oder 84 Werte");
    return;
    }
 Phase next[7][3];
+   uint8_t nextTemps[7][3];
    int k=0;
    for(int d=0;d<7;d++)for(int i=0;i<3;i++){
 int a=values[k++],b=values[k++],en=values[k++];
@@ -2362,8 +2372,12 @@ server.send(400,"text/plain","ungueltige Phase");
        return;
      }
 next[d][i]={(uint16_t)a,(uint16_t)b,en==1};
+     int half=(n==84)?values[k++]:phaseTempHalf[d][i];
+     if(half<20||half>56){server.send(400,"text/plain","Temperatur ausserhalb 10 bis 28 Grad");return;}
+     nextTemps[d][i]=(uint8_t)half;
    }
 memcpy(phases,next,sizeof(phases));
+memcpy(phaseTempHalf,nextTemps,sizeof(phaseTempHalf));
 scheduleEnabled=server.arg("enabled")=="1";
 comfortRoom=constrain(server.arg("comfort").toFloat(),10.f,28.f);
 reducedRoom=constrain(server.arg("reduced").toFloat(),10.f,28.f);
