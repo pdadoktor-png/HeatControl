@@ -626,27 +626,30 @@ static constexpr float TEMP_BETA[3]={NTC_A0_BETA,NTC_A1_BETA,NTC_A2_BETA};
 // Individuelle NTC-Nennwiderstaende; Wolf-Fuehlerkennlinien noch nicht kalibriert.
 static constexpr float TEMP_R25[3]={NTC_A0_R25,NTC_A1_R25,NTC_A2_R25};
 uint32_t lastSensorPoll=0;
-// 20-second moving average per channel (sampling currently every 1.5 seconds).
-static constexpr uint8_t TEMP_FILTER_SAMPLES=14;
-float tempSamples[3][TEMP_FILTER_SAMPLES]={};
+// Individuelle gleitende Mittelung. Messzyklus ca. 1,5 s; 0 = Rohwert.
+static constexpr uint16_t TEMP_FILTER_CAPACITY=1200; // 30 min bei 1,5 s
+uint16_t tempFilterSeconds[3]={300,120,20};
+float tempSamples[3][TEMP_FILTER_CAPACITY]={};
 float rawTemperature[3]={NAN,NAN,NAN};
-uint8_t tempSampleCount[3]={},tempSampleNext[3]={};
+uint16_t tempSampleCount[3]={},tempSampleNext[3]={};
 float tempSampleSum[3]={};
 static void clearTempFilter(uint8_t channel){
-  tempSampleCount[channel]=0;
-  tempSampleNext[channel]=0;
-  tempSampleSum[channel]=0;
+ tempSampleCount[channel]=0;tempSampleNext[channel]=0;tempSampleSum[channel]=0;
 }
 static float smoothTemperature(uint8_t channel,float value){
-  if(tempSampleCount[channel]==TEMP_FILTER_SAMPLES){
-    tempSampleSum[channel]-=tempSamples[channel][tempSampleNext[channel]];
-  }else{
-    tempSampleCount[channel]++;
-  }
-  tempSamples[channel][tempSampleNext[channel]]=value;
-  tempSampleSum[channel]+=value;
-  tempSampleNext[channel]=(tempSampleNext[channel]+1)%TEMP_FILTER_SAMPLES;
-  return tempSampleSum[channel]/tempSampleCount[channel];
+ const uint16_t wanted=(uint16_t)constrain((int)((tempFilterSeconds[channel]*1000UL+1499UL)/1500UL),1,(int)TEMP_FILTER_CAPACITY);
+ while(tempSampleCount[channel]>wanted){
+  const uint16_t oldest=(tempSampleNext[channel]+TEMP_FILTER_CAPACITY-tempSampleCount[channel])%TEMP_FILTER_CAPACITY;
+  tempSampleSum[channel]-=tempSamples[channel][oldest];tempSampleCount[channel]--;
+ }
+ if(tempSampleCount[channel]==wanted){
+  const uint16_t oldest=(tempSampleNext[channel]+TEMP_FILTER_CAPACITY-tempSampleCount[channel])%TEMP_FILTER_CAPACITY;
+  tempSampleSum[channel]-=tempSamples[channel][oldest];tempSampleCount[channel]--;
+ }
+ tempSamples[channel][tempSampleNext[channel]]=value;
+ tempSampleSum[channel]+=value;tempSampleCount[channel]++;
+ tempSampleNext[channel]=(tempSampleNext[channel]+1)%TEMP_FILTER_CAPACITY;
+ return tempFilterSeconds[channel]==0?value:tempSampleSum[channel]/tempSampleCount[channel];
 }
 bool adsPing(){
 Wire.beginTransmission(ADS_ADDRESS);
@@ -1793,6 +1796,7 @@ Serial.begin(115200);
  Serial.println("HeatControl v" HEATCONTROL_VERSION " | Build " HEATCONTROL_BUILD_NUMBER " | Git " HEATCONTROL_GIT_SHA " – SIMULATION / RELAIS-PRUEFSTAND");
 prefs.begin("heatcontrol",false);
 roomSource.begin(prefs);
+for(int i=0;i<3;i++)tempFilterSeconds[i]=(uint16_t)constrain((int)prefs.getUInt((String("flt")+i).c_str(),i==0?300:(i==1?120:20)),0,i==0?1800:(i==1?900:120));
  burnerStarts=prefs.getUInt("burnStarts",0);
  burnerSeconds=prefs.getUInt("burnSecs",0);
  pumpSeconds=prefs.getUInt("pumpSecs",0);
@@ -1835,6 +1839,24 @@ configTzTime(tzRule,"pool.ntp.org","time.google.com");
  }
 Serial.print("Test-WLAN HeatControl-Test, Browser: http://");
  Serial.println(WiFi.softAPIP());
+server.on("/api/sensor-filter",HTTP_GET,[]{
+ server.send(200,"application/json",String("{\"outside\":")+tempFilterSeconds[0]+",\"room\":"+tempFilterSeconds[1]+",\"boiler\":"+tempFilterSeconds[2]+"}");
+});
+server.on("/api/sensor-filter",HTTP_POST,[]{
+ const char* keys[]={"outside","room","boiler"};
+ const int maximum[]={1800,900,120};
+ uint16_t next[3];
+ for(int i=0;i<3;i++){
+  if(!server.hasArg(keys[i])){server.send(400,"text/plain","Einstellung fehlt");return;}
+  String value=server.arg(keys[i]);
+  for(size_t j=0;j<value.length();j++)if(!isdigit((unsigned char)value[j])){server.send(400,"text/plain","Ungueltige Zahl");return;}
+  int v=value.toInt();
+  if(v<0||v>maximum[i]){server.send(400,"text/plain","Zeit ausserhalb Bereich");return;}
+  next[i]=(uint16_t)v;
+ }
+ for(int i=0;i<3;i++){tempFilterSeconds[i]=next[i];clearTempFilter(i);prefs.putUInt((String("flt")+i).c_str(),next[i]);}
+ server.send(200,"application/json","{\"saved\":true}");
+});
 server.on("/api/display",HTTP_GET,[]{
  server.sendHeader("Cache-Control","no-store");
  server.send(200,"application/json",String("{\"brightness\":")+String(lcdBrightness)+",\"timeout\":"+String(lcdTimeoutSec)+",\"sleeping\":"+(lcdSleeping?"true":"false")+"}");
