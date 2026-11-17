@@ -21,7 +21,7 @@ body{font:16px system-ui;background:#111b26;color:#e7eef7;max-width:820px;margin
 <p><label>Kesseltemperatur (Sekunden) <input type="number" id="filterBoiler" min="0" max="120" step="1" value="20"></label> 0–120 s</p>
 <button onclick="saveSensorFilters()">Mittelung speichern</button><p><small>Die ungefilterte Kesseltemperatur bleibt für die 75-°C-Abschaltung maßgeblich. Unabhängige Sicherheitseinrichtungen bleiben erforderlich.</small></p></div></section>
 <section id="curve" class="tab"><h3>Heizkurve</h3><p>Grafik der aktuell verwendeten HeatControl-Formel: Kessel-Soll = Raum-Soll + Steilheit × (Raum-Soll − Außen), begrenzt auf 25–75 °C. Die gemessene Raumtemperatur beeinflusst den Kessel-Sollwert derzeit nicht; eine spätere WLAN-Raumtemperaturregelung ist vorgesehen.</p>
-<svg id="curveSvg" viewBox="0 0 640 315" role="img" aria-label="Heizkurve: Außentemperatur gegen Kesselsolltemperatur" style="width:100%;height:auto;background:#142335;border-radius:10px"></svg><div id="curveLegend" style="padding:8px;color:#b6c4d3"></div><span id="simulationTempFields"><label>Außen °C <input id="outside" type="number" step="0.5"></label><label>Raum °C <input id="room" type="number" step="0.5"></label><label>Kessel °C <input id="boiler" type="number" step="0.5"></label></span><label>Steilheit <input id="slope" type="number" min="0.2" max="3" step="0.1"></label><label>Niveau / Parallelverschiebung °C <input id="curveLevel" type="number" min="-15" max="15" step="0.5"></label><label>Hysterese °C <input id="hysteresis" type="number" min="2" max="15" step="0.5"></label><label>Mindestlaufzeit (s) <input id="minBurnerOn" type="number" min="0" max="600" step="1"></label><label>Mindestpause (s) <input id="minBurnerOff" type="number" min="0" max="600" step="1"></label><label><input id="automatic" type="checkbox"> Automatik</label><p><button onclick="saveCurve()">Werte übernehmen</button></p></section>
+<svg id="curveSvg" viewBox="0 0 640 315" role="img" aria-label="Heizkurve: Außentemperatur gegen Kesselsolltemperatur" style="width:100%;height:auto;background:#142335;border-radius:10px"></svg><div id="curveLegend" style="padding:8px;color:#b6c4d3"></div><div id="curveCursorInfo" role="status" style="padding:9px 12px;margin:6px 0;background:#172d42;border-radius:8px">Maus oder Finger über die Heizkurve bewegen, um genaue Werte abzulesen.</div><span id="simulationTempFields"><label>Außen °C <input id="outside" type="number" step="0.5"></label><label>Raum °C <input id="room" type="number" step="0.5"></label><label>Kessel °C <input id="boiler" type="number" step="0.5"></label></span><label>Steilheit <input id="slope" type="number" min="0.2" max="3" step="0.1"></label><label>Niveau / Parallelverschiebung °C <input id="curveLevel" type="number" min="-15" max="15" step="0.5"></label><label>Hysterese °C <input id="hysteresis" type="number" min="2" max="15" step="0.5"></label><label>Mindestlaufzeit (s) <input id="minBurnerOn" type="number" min="0" max="600" step="1"></label><label>Mindestpause (s) <input id="minBurnerOff" type="number" min="0" max="600" step="1"></label><label><input id="automatic" type="checkbox"> Automatik</label><p><button onclick="saveCurve()">Werte übernehmen</button></p></section>
 <section id="tank" class="tab"><h3>Öltankmanagement – Stahltank 4.200 Liter</h3>
 <p><small>Leicht bauchiger Stahltank: Ohne Peiltabelle wird die Füllhöhe nicht in Liter umgerechnet. Der Anfangsbestand wird manuell erfasst; Lieferungen werden hinzugebucht. Bei aktiver Regelung wird der aus der Brenneranforderung und dem eingestellten Öldurchsatz geschätzte Verbrauch automatisch abgezogen. Dies ist keine tatsächliche Ölverbrauchsmessung. Der Bestand wird alle 5 Minuten gesichert.</small></p>
 <div id="tankState">Lade Tankdaten ...</div><div style="height:18px;background:#0f1a26;border-radius:9px;overflow:hidden;margin:12px 0"><div id="tankBar" style="height:100%;background:#50b6ab;width:0%"></div></div>
@@ -67,17 +67,46 @@ async function saveSensorFilters(){
  for(const [id,max] of fields){const v=Number($(id).value);if(!Number.isInteger(v)||v<0||v>max){feedback('Ungültige Mittelungszeit');return;}}
  if(await post('/api/sensor-filter',{outside:$('filterOutside').value,room:$('filterRoom').value,boiler:$('filterBoiler').value})){feedback('Sensor-Mittelung gespeichert');}
 }
+let curveCursorOutside=null;
+let curveLatestStatus=null;
+function updateCurveCursor(){
+ const j=curveLatestStatus,svg=$('curveSvg'),info=$('curveCursorInfo');
+ if(!j||!svg||!info)return;
+ const marker=svg.querySelector('#curveCursorMarker');
+ if(curveCursorOutside===null){if(marker)marker.setAttribute('visibility','hidden');return;}
+ const a=curveCursorOutside,roomTarget=Number(j.targetRoom),slope=Number(j.slope),level=Number(j.curveLevel)||0;
+ const set=Math.max(25,Math.min(75,roomTarget+slope*(roomTarget-a)+level));
+ const W=640,H=315,L=58,R=20,T=20,B=46;
+ const x=L+(a+20)/40*(W-L-R),y=T+(75-set)/50*(H-T-B);
+ if(marker){marker.setAttribute('transform','translate('+x.toFixed(2)+' '+y.toFixed(2)+')');marker.setAttribute('visibility','visible');}
+ const fmt=v=>v==null||!Number.isFinite(Number(v))?'—':Number(v).toFixed(1)+' °C';
+ info.textContent='Cursor: Außen '+fmt(a)+' | Kessel-Soll '+fmt(set)+' | Raum-Ist '+fmt(j.room)+' | Kessel-Ist '+fmt(j.boiler)+' | Raum-Soll '+fmt(j.targetRoom);
+}
+function moveCurveCursor(event){
+ const svg=$('curveSvg'),rect=svg.getBoundingClientRect();
+ if(!rect.width)return;
+ const W=640,L=58,R=20;
+ const px=(event.clientX-rect.left)/rect.width*W;
+ curveCursorOutside=Math.max(-20,Math.min(20,-20+(px-L)/(W-L-R)*40));
+ updateCurveCursor();
+}
 function drawHeatingCurve(j){
  const svg=$('curveSvg');if(!svg)return;
+ curveLatestStatus=j;
  const W=640,H=315,L=58,R=20,T=20,B=46;
  const x=t=>L+(t+20)/40*(W-L-R),y=t=>T+(75-t)/50*(H-T-B);
- const sp=(a,room)=>Math.max(25,Math.min(75,j.targetRoom+j.slope*(j.targetRoom-a)+(j.curveLevel||0)));
+ const sp=a=>Math.max(25,Math.min(75,Number(j.targetRoom)+Number(j.slope)*(Number(j.targetRoom)-a)+(Number(j.curveLevel)||0)));
  let h='';for(let t=25;t<=75;t+=10)h+=`<line x1="${L}" y1="${y(t)}" x2="${W-R}" y2="${y(t)}" stroke="#3a4e61"/><text x="${L-8}" y="${y(t)+4}" text-anchor="end" fill="#c5d3e0" font-size="13">${t}°</text>`;
  for(let t=-20;t<=20;t+=10)h+=`<line x1="${x(t)}" y1="${T}" x2="${x(t)}" y2="${H-B}" stroke="#3a4e61"/><text x="${x(t)}" y="${H-B+20}" text-anchor="middle" fill="#c5d3e0" font-size="13">${t}°</text>`;
- const path=Array.from({length:81},(_,i)=>{let a=-20+i*.5;return(i?'L':'M')+x(a).toFixed(1)+' '+y(sp(a,j.room)).toFixed(1)}).join(' ');
- let a=Math.max(-20,Math.min(20,j.outside)),b=sp(j.outside,j.room);
- h+=`<path d="${path}" fill="none" stroke="#5bd1fa" stroke-width="3"/><circle cx="${x(a)}" cy="${y(b)}" r="6" fill="#ffb454" stroke="#fff" stroke-width="2"/><text x="${W/2}" y="${H-5}" fill="#c5d3e0" text-anchor="middle" font-size="14">Außentemperatur (°C)</text><text x="8" y="14" fill="#c5d3e0" font-size="12">Kesselsoll (°C)</text>`;
- svg.innerHTML=h;$('curveLegend').textContent=`Aktuell: Außen ${j.outside} °C, Raum ${j.room} °C, Soll ${j.setpoint} °C | Steilheit ${j.slope} | Niveau ${j.curveLevel||0} °C`;
+ const path=Array.from({length:81},(_,i)=>{let a=-20+i*.5;return(i?'L':'M')+x(a).toFixed(1)+' '+y(sp(a)).toFixed(1)}).join(' ');
+ let a=Math.max(-20,Math.min(20,Number(j.outside))),b=sp(Number(j.outside));
+ h+=`<path d="${path}" fill="none" stroke="#5bd1fa" stroke-width="3"/><circle cx="${x(a)}" cy="${y(b)}" r="6" fill="#ffb454" stroke="#fff" stroke-width="2"/><g id="curveCursorMarker" visibility="hidden" pointer-events="none"><line x1="0" y1="${T-250}" x2="0" y2="250" stroke="#fff" stroke-width="1" stroke-dasharray="4 4" opacity=".65"/><circle r="7" fill="#fff" stroke="#173b54" stroke-width="2"/></g><text x="${W/2}" y="${H-5}" fill="#c5d3e0" text-anchor="middle" font-size="14">Außentemperatur (°C)</text><text x="8" y="14" fill="#c5d3e0" font-size="12">Kesselsoll (°C)</text>`;
+ svg.innerHTML=h;
+ svg.style.touchAction='none';
+ svg.onpointermove=moveCurveCursor;
+ svg.onpointerdown=moveCurveCursor;
+ $('curveLegend').textContent=`Aktuell: Außen ${j.outside} °C, Raum ${j.room} °C, Soll ${j.setpoint} °C | Steilheit ${j.slope} | Niveau ${j.curveLevel||0} °C`;
+ updateCurveCursor();
 }
 async function loadOptimization(){
  const btn=$('optRefresh'), status=$('optRefreshStatus');
